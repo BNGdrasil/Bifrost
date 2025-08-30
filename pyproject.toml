@@ -1,0 +1,142 @@
+[project]
+name = "bifrost"
+dynamic = ["version"]
+description = "API gateway server"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "bnbong", email = "bbbong9@gmail.com" }
+]
+license = "MIT"
+keywords = ["python", "fastapi", "api", "gateway"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "fastapi==0.104.1",
+    "uvicorn[standard]==0.24.0",
+    "httpx==0.25.2",
+    "pydantic==2.5.0",
+    "pydantic-settings==2.1.0",
+    "python-multipart==0.0.6",
+    "python-jose[cryptography]==3.3.0",
+    "passlib[bcrypt]==1.7.4",
+    "redis==5.0.1",
+    "sqlalchemy==2.0.23",
+    "psycopg2-binary==2.9.9",
+    "alembic==1.13.1",
+    "structlog==23.2.0",
+    "prometheus-client==0.19.0",
+    "fastapi-fastkit>=1.1.1",
+    "setuptools>=80.9.0",
+    "pytest-asyncio>=1.1.0",
+]
+
+[project.urls]
+"Source" = "https://github.com/BNGdrasil/Bifrost"
+"Homepage" = "https://bnbong.xyz"
+"Bug Reports" = "https://github.com/BNGdrasil/Bifrost/issues"
+
+[project.scripts]
+bifrost = "src.main:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "black>=24.0",
+    "isort>=5.13",
+    "flake8>=7.0",
+    "mypy>=1.8",
+    "pre-commit>=3.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "code"
+path = "src/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.black]
+line-length = 88
+target-version = ['py39']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["src"]
+skip_glob = [".venv/*", "build/*", "dist/*"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+disallow_untyped_decorators = false
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+# Test files can be less strict
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:"
+]
