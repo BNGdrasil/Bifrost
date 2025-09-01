@@ -4,7 +4,7 @@
 
 <div align="center">
 
-# 🌉 Bifrost API Gateway
+# 🌉 Bifrost (Bnbong + bifrost)
 
 **API Gateway for Microservices**
 
