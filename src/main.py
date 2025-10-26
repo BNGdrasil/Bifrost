@@ -16,6 +16,7 @@ from prometheus_client import REGISTRY, Counter, Histogram
 from prometheus_client.openmetrics.exposition import generate_latest
 
 from src import __version__
+from src.api.admin import admin_router
 from src.api.api import router as api_router
 from src.core.config import settings
 from src.core.middleware import LoggingMiddleware, RateLimitMiddleware
@@ -42,11 +43,20 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Prometheus metrics
-REQUEST_COUNT = Counter(
-    "http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"]
-)
-REQUEST_LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency")
+# Prometheus metrics - check if already registered to avoid duplicates
+try:
+    REQUEST_COUNT = Counter(
+        "http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"]
+    )
+except ValueError:
+    # Metric already registered, get it from registry
+    REQUEST_COUNT = REGISTRY._names_to_collectors.get("http_requests_total")  # type: ignore
+
+try:
+    REQUEST_LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency")
+except ValueError:
+    # Metric already registered, get it from registry
+    REQUEST_LATENCY = REGISTRY._names_to_collectors.get("http_request_duration_seconds")  # type: ignore
 
 
 @asynccontextmanager
@@ -95,6 +105,7 @@ def create_app() -> FastAPI:
 
     # Add routes
     app.include_router(api_router, prefix="/api/v1")
+    app.include_router(admin_router, prefix="/admin/api")
 
     # Health check endpoint
     @app.get("/health")

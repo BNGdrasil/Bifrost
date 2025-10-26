@@ -68,6 +68,60 @@ graph TB
 
 ---
 
+## Project Structure
+
+```
+bifrost/
+├── src/                    # Gateway Core
+│   ├── api/               # Gateway API endpoints
+│   ├── services/          # Service registry & management
+│   ├── core/              # Configuration & middleware
+│   └── main.py            # FastAPI application
+├── admin/                 # Admin Dashboard (NEW)
+│   ├── backend/           # Admin API (FastAPI)
+│   │   ├── src/
+│   │   │   ├── api/       # Admin API endpoints
+│   │   │   ├── core/      # Auth, permissions, config
+│   │   │   └── main.py
+│   │   └── README.md
+│   └── frontend/          # Admin UI (React + TypeScript)
+│       ├── src/
+│       │   ├── components/  # UI components
+│       │   ├── pages/       # Dashboard pages
+│       │   ├── services/    # API clients
+│       │   └── App.tsx
+│       └── README.md
+├── tests/                 # Test suites
+├── requirements.txt       # Python dependencies
+└── README.md              # This file
+```
+
+### Admin Dashboard
+
+The **Admin Dashboard** provides a web-based interface for managing the entire BNGdrasil system:
+
+- **Backend** (`admin/backend/`): FastAPI-based Admin API server
+  - User management
+  - Service monitoring
+  - System settings
+  - Audit logs
+  - Statistics and analytics
+
+- **Frontend** (`admin/frontend/`): React + TypeScript Admin UI
+  - Intuitive dashboard
+  - Real-time metrics
+  - Service status monitoring
+  - User management interface
+  - Integrated Grafana dashboards
+
+**Access**: `https://admin.bnbong.xyz`
+
+For detailed documentation, see:
+- [Admin Backend README](admin/backend/README.md)
+- [Admin Frontend README](admin/frontend/README.md)
+
+---
+
 ## Quick Start
 
 ### Prerequisites
@@ -260,6 +314,74 @@ All logs are structured JSON format:
 4. **Configure CORS** restrictively
 5. **Monitor security metrics** regularly
 6. **Keep dependencies updated**
+
+---
+
+## Deployment
+
+### Production Deployment (VM2)
+
+This service is deployed on **VM2** (Chuncheon region, Public subnet):
+- **Location**: 10.0.1.60:8000 (private IP)
+- **Public Access**: via VM1 Nginx reverse proxy (api.bnbong.xyz)
+- **Resources**: 2 OCPU, 12GB RAM
+
+### Docker Deployment
+
+```bash
+# 1. Build Docker image
+docker build -t bifrost:latest .
+
+# 2. Run container
+docker run -d \
+  -p 8000:8000 \
+  --name bifrost \
+  --env-file .env \
+  bifrost:latest
+
+# Or use docker-compose (on VM2)
+docker-compose up -d gateway
+```
+
+### Manual Deployment to VM2
+
+```bash
+# 1. SSH to VM2
+ssh ubuntu@<VM2_PUBLIC_IP>
+
+# 2. Pull latest code
+cd /opt/bnbong/gateway
+git pull
+
+# 3. Rebuild and restart
+docker-compose build gateway
+docker-compose up -d gateway
+
+# 4. Check status
+docker-compose logs -f gateway
+```
+
+### Environment Configuration (VM2)
+
+Create `/opt/bnbong/.env` with:
+
+```bash
+ENVIRONMENT=production
+AUTH_SERVER_URL=http://localhost:8001
+REDIS_URL=redis://10.0.2.134:6379/0
+LOG_LEVEL=INFO
+RATE_LIMIT_PER_MINUTE=60
+```
+
+### Health Check
+
+```bash
+# From VM1 or external
+curl http://api.bnbong.xyz/health
+
+# From VM2 internally
+curl http://localhost:8000/health
+```
 
 ---
 
