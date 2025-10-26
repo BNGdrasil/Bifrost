@@ -9,12 +9,13 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy application code
+COPY src/ ./src/
+COPY pyproject.toml setup.py README.md ./
+
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy application code
-COPY src/ ./src/
 
 # Create config directory
 RUN mkdir -p /app/config
