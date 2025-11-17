@@ -1,0 +1,61 @@
+services:
+  # PostgreSQL test database
+  test-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_DB: bifrost_test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d bifrost_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - ./tests/fixtures/init_test_db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - test-network
+
+  # Bifrost application for testing
+  bifrost-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    env_file:
+      - .env.test
+    depends_on:
+      test-db:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+    volumes:
+      - .:/app
+      - /app/.venv  # Prevent mounting .venv
+    command: >
+      sh -c "
+        echo 'Waiting for database...' &&
+        sleep 5 &&
+        echo 'Running tests...' &&
+        pytest tests/ -v --cov=src --cov-report=html --cov-report=xml --cov-report=term
+      "
+    networks:
+      - test-network
+
+  # Optional: Redis for caching tests
+  test-redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - test-network
+
+networks:
+  test-network:
+    driver: bridge

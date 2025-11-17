@@ -37,6 +37,7 @@ dependencies = [
     "fastapi-fastkit>=1.1.1",
     "setuptools>=80.9.0",
     "pytest-asyncio>=1.1.0",
+    "greenlet>=3.2.4",
 ]
 
 [project.urls]

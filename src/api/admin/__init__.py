@@ -14,9 +14,7 @@ admin_router = APIRouter()
 
 # Include all admin routers
 admin_router.include_router(users_router, prefix="/users", tags=["admin-users"])
-admin_router.include_router(
-    services_router, prefix="/services", tags=["admin-services"]
-)
+admin_router.include_router(services_router, tags=["admin-services"])
 admin_router.include_router(logs_router, prefix="/logs", tags=["admin-logs"])
 admin_router.include_router(
     settings_router, prefix="/settings", tags=["admin-settings"]

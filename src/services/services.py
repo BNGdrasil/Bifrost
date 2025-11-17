@@ -3,55 +3,53 @@
 #
 # @author bnbong bbbong9@gmail.com
 # --------------------------------------------------------------------------
-import json
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 import httpx
 import structlog
 
+from src.core.database import SessionLocal
+from src.crud.service import get_services, update_service_health
+
 logger = structlog.get_logger()
 
 
 class ServiceRegistry:
-    """Service registry for managing API endpoints"""
+    """Service registry for managing API endpoints (DB-based)"""
 
     def __init__(self) -> None:
         self.services: Dict[str, Dict[str, Any]] = {}
         self.http_client = httpx.AsyncClient(timeout=30.0)
 
-    async def initialize(self) -> None:
-        """Initialize service registry from configuration"""
+    def _load_services(self, db_session) -> None:
+        db_services = get_services(db_session, active_only=True)
+        self.services = {}
+        for service in db_services:
+            service_name: str = service.name  # type: ignore[assignment]
+            self.services[service_name] = {
+                "id": service.id,
+                "url": service.url,
+                "health_check": service.health_check_path,
+                "timeout": service.timeout_seconds,
+                "rate_limit": service.rate_limit_per_minute,
+                "display_name": service.display_name,
+                "description": service.description,
+                "service_metadata": service.service_metadata,
+            }
+
+    async def initialize(self, db_session=None) -> None:
+        """Initialize service registry from database"""
         try:
-            # Load services from JSON config
-            config_path = Path("/app/config/services.json")
-            if config_path.exists():
-                with open(config_path, "r") as f:
-                    self.services = json.load(f)
-                logger.info(
-                    "Loaded services from configuration", count=len(self.services)
-                )
+            if db_session is not None:
+                self._load_services(db_session)
             else:
-                # Default services for development
-                self.services = {
-                    "qshing-server": {
-                        "url": "https://qshing-server.example.com",
-                        "health_check": "/health",
-                        "timeout": 30,
-                        "rate_limit": 100,
-                    },
-                    "hello": {
-                        "url": "https://hello-service.example.com",
-                        "health_check": "/health",
-                        "timeout": 30,
-                        "rate_limit": 100,
-                    },
-                }
-                logger.info(
-                    "Using default services configuration", count=len(self.services)
-                )
+                with SessionLocal() as session:
+                    self._load_services(session)
+            logger.info("Loaded services from database", count=len(self.services))
         except Exception as e:
-            logger.error("Failed to initialize service registry", error=str(e))
+            logger.error(
+                "Failed to initialize service registry from database", error=str(e)
+            )
             self.services = {}
 
     async def cleanup(self) -> None:
@@ -91,8 +89,17 @@ class ServiceRegistry:
             return True
         return False
 
+    async def reload(self, db_session=None) -> None:
+        """Reload services from database
+
+        Args:
+            db_session: Optional database session. If not provided, creates a new one.
+        """
+        await self.initialize(db_session=db_session)
+        logger.info("Service registry reloaded from database")
+
     async def health_check(self, service_name: str) -> bool:
-        """Check health of a service"""
+        """Check health of a service and update database"""
         service = self.get_service(service_name)
         if not service:
             return False
@@ -100,9 +107,30 @@ class ServiceRegistry:
         try:
             health_url = f"{service['url']}{service.get('health_check', '/health')}"
             response = await self.http_client.get(health_url)
-            return bool(response.status_code == 200)
+            is_healthy = bool(response.status_code == 200)
+
+            # Update health status in database
+            with SessionLocal() as db:
+                health_status = "healthy" if is_healthy else "unhealthy"
+                update_service_health(db, service["id"], health_status)
+
+            logger.info(
+                "Health check completed",
+                service_name=service_name,
+                status=health_status,
+            )
+
+            return is_healthy
         except Exception as e:
             logger.error("Health check failed", service_name=service_name, error=str(e))
+
+            # Update health status as unhealthy in database
+            try:
+                with SessionLocal() as db:
+                    update_service_health(db, service["id"], "unhealthy")
+            except Exception:
+                pass
+
             return False
 
 

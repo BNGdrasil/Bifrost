@@ -99,7 +99,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
     app.add_middleware(LoggingMiddleware)
     app.add_middleware(RateLimitMiddleware)
 

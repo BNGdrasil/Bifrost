@@ -26,13 +26,24 @@
 ### Key Features
 
 - **High Performance**: Built on FastAPI and asyncio for maximum throughput
-- **Service Discovery**: Dynamic service registration and management
-- **Security**: CORS, trusted hosts, and rate limiting middleware
-- **Monitoring**: Prometheus metrics and structured logging
-- **Admin API**: REST endpoints for service management
-- **Health Checks**: Automatic service health monitoring
-- **Request Proxying**: Intelligent request forwarding to backend services
-- **Cloud Ready**: Docker support with environment-based configuration
+- **Service Discovery**: Dynamic service registration and management with PostgreSQL persistence
+- **Admin Dashboard API**: Comprehensive REST API for system administration
+  - Service lifecycle management (CRUD operations)
+  - User management and access control
+  - System logs and audit trails
+  - Real-time statistics and monitoring
+- **Security & Authentication**:
+  - JWT-based authentication
+  - Role-based access control (Admin, Super Admin)
+  - CORS, trusted hosts, and rate limiting middleware
+- **Database-Driven**: PostgreSQL for persistent storage with SQLAlchemy ORM
+- **Monitoring & Observability**:
+  - Prometheus metrics export
+  - Structured JSON logging with structlog
+  - Automatic health checks for registered services
+- **Request Proxying**: Intelligent request forwarding to backend services with full HTTP method support
+- **Cloud Ready**: Docker support with multi-stage builds and environment-based configuration
+- **Developer Friendly**: Comprehensive API documentation via OpenAPI/Swagger
 
 ---
 
@@ -60,11 +71,19 @@ graph TB
 
 ### Core Components
 
-- **API Router** (`src/api/`): RESTful endpoints for service management and health checks
-- **Service Registry** (`src/services/`): Dynamic service discovery and management
-- **Middleware Stack** (`src/core/middleware.py`): CORS, rate limiting, and logging
-- **Configuration** (`src/core/config.py`): Environment-based settings management
-- **Main Application** (`src/main.py`): FastAPI app factory and startup logic
+- **Gateway API** (`src/api/api.py`): Service discovery, health checks, and request proxying
+- **Admin API** (`src/api/admin/`): Service, user, logs, and settings management endpoints
+- **Service Registry** (`src/services/services.py`): Dynamic service discovery, health monitoring, and request forwarding
+- **Database Layer**:
+  - **Models** (`src/models/`): SQLAlchemy ORM models for data persistence
+  - **Schemas** (`src/schemas/`): Pydantic models for request/response validation
+  - **CRUD** (`src/crud/`): Database operations for service management
+- **Core Utilities**:
+  - **Configuration** (`src/core/config.py`): Environment-based settings management
+  - **Database** (`src/core/database.py`): PostgreSQL connection and session management
+  - **Middleware** (`src/core/middleware.py`): CORS, rate limiting, and structured logging
+  - **Permissions** (`src/core/permissions.py`): JWT authentication and role-based access control
+- **Main Application** (`src/main.py`): FastAPI app initialization, middleware setup, and lifecycle management
 
 ---
 
@@ -73,52 +92,72 @@ graph TB
 ```
 bifrost/
 ├── src/                    # Gateway Core
-│   ├── api/               # Gateway API endpoints
+│   ├── api/               # API endpoints
+│   │   ├── admin/         # Admin API endpoints
+│   │   │   ├── services.py   # Service management
+│   │   │   ├── users.py      # User management
+│   │   │   ├── logs.py       # Audit logs & system logs
+│   │   │   └── settings.py   # System settings
+│   │   └── api.py         # Gateway API endpoints
+│   ├── core/              # Core functionality
+│   │   ├── config.py      # Configuration management
+│   │   ├── database.py    # Database connection
+│   │   ├── middleware.py  # Custom middleware
+│   │   └── permissions.py # Authorization & permissions
+│   ├── crud/              # Database operations
+│   │   └── service.py     # Service CRUD operations
+│   ├── models/            # Database models
+│   │   └── service.py     # Service model
+│   ├── schemas/           # Pydantic schemas
+│   │   └── service.py     # Service schemas
 │   ├── services/          # Service registry & management
-│   ├── core/              # Configuration & middleware
+│   │   └── services.py    # Service discovery & proxy
+│   ├── utils/             # Utility functions
 │   └── main.py            # FastAPI application
-├── admin/                 # Admin Dashboard (NEW)
-│   ├── backend/           # Admin API (FastAPI)
-│   │   ├── src/
-│   │   │   ├── api/       # Admin API endpoints
-│   │   │   ├── core/      # Auth, permissions, config
-│   │   │   └── main.py
-│   │   └── README.md
-│   └── frontend/          # Admin UI (React + TypeScript)
-│       ├── src/
-│       │   ├── components/  # UI components
-│       │   ├── pages/       # Dashboard pages
-│       │   ├── services/    # API clients
-│       │   └── App.tsx
-│       └── README.md
 ├── tests/                 # Test suites
+│   ├── conftest.py        # Test configuration
+│   ├── fixtures/          # Test fixtures
+│   ├── test_api.py        # API tests
+│   ├── test_config.py     # Configuration tests
+│   ├── test_integration.py # Integration tests
+│   └── test_middleware.py # Middleware tests
+├── scripts/               # Utility scripts
+│   ├── dev.sh             # Development server
+│   ├── format.sh          # Code formatting
+│   ├── lint.sh            # Linting
+│   ├── test.sh            # Run tests
+│   └── test-docker.sh     # Docker-based tests
 ├── requirements.txt       # Python dependencies
+├── pyproject.toml         # Project configuration
+├── Dockerfile             # Production container
+├── Dockerfile.test        # Test container
+├── docker-compose.test.yml # Test environment
 └── README.md              # This file
 ```
 
-### Admin Dashboard
+### Key Components
 
-The **Admin Dashboard** provides a web-based interface for managing the entire BNGdrasil system:
+The gateway is organized into several key modules:
 
-- **Backend** (`admin/backend/`): FastAPI-based Admin API server
-  - User management
-  - Service monitoring
-  - System settings
-  - Audit logs
-  - Statistics and analytics
+- **API Layer** (`src/api/`): RESTful endpoints for both gateway and admin operations
+  - Gateway API for service discovery and proxying
+  - Admin API for service management, user management, logs, and settings
 
-- **Frontend** (`admin/frontend/`): React + TypeScript Admin UI
-  - Intuitive dashboard
-  - Real-time metrics
-  - Service status monitoring
-  - User management interface
-  - Integrated Grafana dashboards
+- **Core** (`src/core/`): Essential gateway functionality
+  - Configuration management with environment-based settings
+  - Database connectivity (PostgreSQL)
+  - Custom middleware (CORS, rate limiting, logging)
+  - Permission system for admin operations
 
-**Access**: `https://admin.bnbong.xyz`
+- **Data Layer** (`src/crud/`, `src/models/`, `src/schemas/`): Database operations
+  - SQLAlchemy models for data persistence
+  - Pydantic schemas for validation
+  - CRUD operations for service management
 
-For detailed documentation, see:
-- [Admin Backend README](admin/backend/README.md)
-- [Admin Frontend README](admin/frontend/README.md)
+- **Service Management** (`src/services/`): Service registry and proxy
+  - Dynamic service discovery
+  - Health check monitoring
+  - Request proxying to backend services
 
 ---
 
@@ -162,44 +201,124 @@ docker run -p 8000:8000 bifrost
 
 Once running, you can access:
 
-- **API Gateway**: http://localhost:8000
-- **Interactive Docs (only in development)**: http://localhost:8000/docs
+- **API Gateway**: http://localhost:8000/api/v1
+- **Admin API**: http://localhost:8000/admin/api
+- **Interactive Docs (development only)**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/health
 - **Metrics**: http://localhost:8000/metrics
+- **Root Endpoint**: http://localhost:8000/
 
 ---
 
-## Service Configuration
+## Configuration
 
-Create `config/services.json` to define your backend services:
+### Environment Variables
 
-```json
-{
-  "user-service": {
-    "url": "http://user-service:8001",
-    "health_check": "/health",
-    "timeout": 30,
-    "rate_limit": 100
-  },
-  "payment-service": {
-    "url": "http://payment-service:8002",
-    "health_check": "/ping",
-    "timeout": 15,
-    "rate_limit": 50
-  }
-}
+Bifrost uses environment variables for configuration. Create a `.env` file based on `env.example`:
+
+```bash
+# Application
+ENVIRONMENT=development  # development, production, testing
+LOG_LEVEL=INFO
+
+# Database
+DATABASE_URL=postgresql://user:password@localhost:5432/bifrost
+DATABASE_POOL_SIZE=10
+DATABASE_MAX_OVERFLOW=20
+
+# Redis (for caching and rate limiting)
+REDIS_URL=redis://localhost:6379/0
+
+# Security
+SECRET_KEY=your-secret-key-here
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8000
+
+# Auth Server
+AUTH_SERVER_URL=http://localhost:8001
+JWT_SECRET_KEY=your-jwt-secret-here
+JWT_ALGORITHM=HS256
+
+# Rate Limiting
+RATE_LIMIT_PER_MINUTE=60
+RATE_LIMIT_BURST=100
+
+# Service Health Check
+HEALTH_CHECK_INTERVAL=60
+HEALTH_CHECK_TIMEOUT=5
 ```
+
+### Database Setup
+
+Bifrost uses PostgreSQL for persistent storage of service configurations and metadata.
+
+**Create Database:**
+```bash
+# Using psql
+createdb bifrost
+
+# Or using PostgreSQL CLI
+psql -U postgres
+CREATE DATABASE bifrost;
+```
+
+**Run Migrations:**
+```bash
+# Install alembic if not already installed
+pip install alembic
+
+# Initialize database schema
+alembic upgrade head
+```
+
+### Service Management
+
+Services are now managed through the database via the Admin API. Use the Admin API endpoints to register, update, and remove services dynamically.
+
+**Example: Register a new service via Admin API:**
+
+```bash
+curl -X POST http://localhost:8000/admin/api/services \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-token>" \
+  -d '{
+    "name": "auth-server",
+    "url": "http://auth-server:8001",
+    "health_check_endpoint": "/health",
+    "timeout": 30,
+    "description": "Authentication and authorization service",
+    "is_active": true
+  }'
+```
+
+The service registry automatically reloads when services are added, updated, or removed.
 
 ---
 
 ## API Reference
 
-### Service Management
+<details>
+<summary><h3>Gateway API (<code>/api/v1</code>)</h3></summary>
+
+The Gateway API provides service discovery and request proxying.
 
 #### List Services
 
 ```http
 GET /api/v1/services
+```
+
+**Response:**
+```json
+{
+  "services": {
+    "auth-server": {
+      "url": "http://auth-server:8001",
+      "health_check": "/health",
+      "timeout": 30
+    }
+  },
+  "count": 1
+}
 ```
 
 #### Check Service Health
@@ -208,46 +327,267 @@ GET /api/v1/services
 GET /api/v1/services/{service_name}/health
 ```
 
-#### Add Service (Admin)
+**Response:**
+```json
+{
+  "service": "auth-server",
+  "healthy": true
+}
+```
+
+#### Request Proxying
+
+All requests to `/api/v1/{service_name}/{path}` are automatically proxied to the registered service:
 
 ```http
-POST /api/v1/admin/services
+# This request:
+GET /api/v1/auth-server/api/users/123
+
+# Gets proxied to:
+GET http://auth-server:8001/api/users/123
+```
+
+Supports all HTTP methods: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`
+
+</details>
+
+---
+
+<details>
+<summary><h3>Admin API (<code>/admin/api</code>)</h3></summary>
+
+The Admin API provides management endpoints for services, users, logs, and system settings. All endpoints require authentication and appropriate permissions.
+
+#### Authentication
+
+All Admin API requests require a valid JWT token:
+
+```http
+Authorization: Bearer <your-token>
+```
+
+<details>
+<summary><h4>Service Management</h4></summary>
+
+**List All Services**
+
+```http
+GET /admin/api/services
+```
+
+Query Parameters:
+- `skip` (int): Number of services to skip (default: 0)
+- `limit` (int): Maximum services to return (default: 100)
+- `active_only` (bool): Return only active services (default: false)
+
+**Get Service Statistics**
+
+```http
+GET /admin/api/services/stats
+```
+
+**Get Service by ID**
+
+```http
+GET /admin/api/services/{service_id}
+```
+
+**Create New Service**
+
+```http
+POST /admin/api/services
 Content-Type: application/json
 
 {
   "name": "new-service",
-  "config": {
-    "url": "http://new-service:8003",
-    "health_check": "/health",
-    "timeout": 30,
-    "rate_limit": 100
+  "url": "http://new-service:8003",
+  "health_check_endpoint": "/health",
+  "timeout": 30,
+  "description": "New microservice",
+  "is_active": true
+}
+```
+
+**Update Service**
+
+```http
+PUT /admin/api/services/{service_id}
+Content-Type: application/json
+
+{
+  "name": "updated-service",
+  "url": "http://updated-service:8003",
+  "is_active": true
+}
+```
+
+**Delete Service**
+
+```http
+DELETE /admin/api/services/{service_id}
+```
+
+**Check Service Health**
+
+```http
+GET /admin/api/services/{service_id}/health
+```
+
+**Reload Service Registry**
+
+```http
+POST /admin/api/services/reload
+```
+
+**Trigger Health Check for All Services**
+
+```http
+POST /admin/api/services/health-check-all
+```
+
+</details>
+
+<details>
+<summary><h4>User Management</h4></summary>
+
+**List Users**
+
+```http
+GET /admin/api/users
+```
+
+Query Parameters:
+- `skip` (int): Number of users to skip (default: 0)
+- `limit` (int): Maximum users to return (default: 100)
+
+**Get User by ID**
+
+```http
+GET /admin/api/users/{user_id}
+```
+
+**Delete User (Super Admin Only)**
+
+```http
+DELETE /admin/api/users/{user_id}
+```
+
+**Reset User Password**
+
+```http
+POST /admin/api/users/{user_id}/reset-password
+```
+
+</details>
+
+<details>
+<summary><h4>Logs & Audit</h4></summary>
+
+**Get System Logs**
+
+```http
+GET /admin/api/logs
+```
+
+Query Parameters:
+- `service` (string): Filter by service name
+- `level` (string): Filter by log level (INFO, WARNING, ERROR)
+- `limit` (int): Maximum logs to return (default: 100)
+
+**Get Audit Logs**
+
+```http
+GET /admin/api/logs/audit
+```
+
+Query Parameters:
+- `limit` (int): Maximum logs to return (default: 100)
+
+</details>
+
+<details>
+<summary><h4>System Settings</h4></summary>
+
+**Get System Settings**
+
+```http
+GET /admin/api/settings
+```
+
+**Update System Settings (Super Admin Only)**
+
+```http
+PUT /admin/api/settings
+Content-Type: application/json
+
+{
+  "maintenance_mode": false,
+  "rate_limit_per_minute": 60
+}
+```
+
+**Get System Statistics**
+
+```http
+GET /admin/api/settings/stats/overview
+```
+
+**Response:**
+
+```json
+{
+  "users": {
+    "total": 150,
+    "active": 120,
+    "new_today": 5
+  },
+  "services": {
+    "total": 3,
+    "healthy": 3,
+    "unhealthy": 0
+  },
+  "api_requests": {
+    "total_today": 15000,
+    "success_rate": 99.5,
+    "avg_response_time": 0.05
   }
 }
 ```
 
-#### Remove Service (Admin)
+</details>
+
+</details>
+
+---
+
+<details>
+<summary><h3>System Endpoints</h3></summary>
+
+**Health Check**
 
 ```http
-DELETE /api/v1/admin/services/{service_name}
+GET /health
 ```
 
-### Request Proxying
-
-All requests to `/{service_name}/{path}` are automatically proxied to the registered service:
+**Prometheus Metrics**
 
 ```http
-# This request:
-GET /api/v1/user-service/api/users/123
-
-# Gets proxied to:
-GET http://user-service:8001/api/users/123
+GET /metrics
 ```
 
-### System Endpoints
+**API Information**
 
-- `GET /health` - Application health check
-- `GET /metrics` - Prometheus metrics
-- `GET /` - API information
+```http
+GET /
+```
+
+**Admin API Root**
+
+```http
+GET /admin/api
+```
+
+</details>
 
 ---
 
@@ -287,101 +627,43 @@ All logs are structured JSON format:
 
 ---
 
-### Environment-Specific Configs
-
-- **Development**: Auto-reload, debug logs, relaxed CORS
-- **Production**: Optimized performance, security headers, rate limiting
-- **Testing**: Isolated services, mock backends, fast execution
-
----
-
 ## Security
 
 ### Security Features
 
+- **JWT Authentication**: Token-based authentication for Admin API
+- **Role-Based Access Control (RBAC)**: Multiple permission levels
+  - **Admin**: Can manage services, view logs, and manage users
+  - **Super Admin**: Full system access including settings modification
 - **CORS Protection**: Configurable origin restrictions
-- **Trusted Hosts**: Host header validation
-- **Rate Limiting**: Per-IP request throttling
+- **Trusted Hosts**: Host header validation *(on fixing...)*
+- **Rate Limiting**: Per-IP request throttling with Redis backend
 - **Secret Management**: Environment-based secrets
 - **Input Validation**: Pydantic model validation
 - **Error Handling**: Secure error responses
+- **Database Security**: SQLAlchemy ORM with parameter binding
 
-### Security Best Practices
+### Permission Levels
 
-1. **Never commit secrets** to version control
-2. **Use environment variables** for configuration
-3. **Enable rate limiting** in production
-4. **Configure CORS** restrictively
-5. **Monitor security metrics** regularly
-6. **Keep dependencies updated**
+Bifrost implements three permission levels:
 
----
+1. **Public**: Unauthenticated access (Gateway API endpoints)
+2. **Admin**: Authenticated users with admin role
+   - Service management (read, create, update, delete)
+   - User management
+   - System logs viewing
+   - System statistics
+3. **Super Admin**: Highest privilege level
+   - All admin permissions
+   - System settings modification
+   - User deletion
 
-## Deployment
+### Authentication Flow
 
-### Production Deployment (VM2)
-
-This service is deployed on **VM2** (Chuncheon region, Public subnet):
-- **Location**: 10.0.1.60:8000 (private IP)
-- **Public Access**: via VM1 Nginx reverse proxy (api.bnbong.xyz)
-- **Resources**: 2 OCPU, 12GB RAM
-
-### Docker Deployment
-
-```bash
-# 1. Build Docker image
-docker build -t bifrost:latest .
-
-# 2. Run container
-docker run -d \
-  -p 8000:8000 \
-  --name bifrost \
-  --env-file .env \
-  bifrost:latest
-
-# Or use docker-compose (on VM2)
-docker-compose up -d gateway
-```
-
-### Manual Deployment to VM2
-
-```bash
-# 1. SSH to VM2
-ssh ubuntu@<VM2_PUBLIC_IP>
-
-# 2. Pull latest code
-cd /opt/bnbong/gateway
-git pull
-
-# 3. Rebuild and restart
-docker-compose build gateway
-docker-compose up -d gateway
-
-# 4. Check status
-docker-compose logs -f gateway
-```
-
-### Environment Configuration (VM2)
-
-Create `/opt/bnbong/.env` with:
-
-```bash
-ENVIRONMENT=production
-AUTH_SERVER_URL=http://localhost:8001
-REDIS_URL=redis://10.0.2.134:6379/0
-LOG_LEVEL=INFO
-RATE_LIMIT_PER_MINUTE=60
-```
-
-### Health Check
-
-```bash
-# From VM1 or external
-curl http://api.bnbong.xyz/health
-
-# From VM2 internally
-curl http://localhost:8000/health
-```
+1. User authenticates via Auth Server (`/auth/login`)
+2. Auth Server issues JWT token with user role
+3. Admin API validates JWT token on each request
+4. Permission decorator checks user role against endpoint requirements
 
 ---
 

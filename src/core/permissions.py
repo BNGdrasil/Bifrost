@@ -120,10 +120,26 @@ def require_role(required_role: str = "admin") -> Callable:
 
 
 def require_admin(func: Callable) -> Callable:
-    """Shorthand decorator for @require_role("admin")."""
-    return require_role("admin")(func)  # type: ignore[no-any-return]
+    """Shorthand decorator for @require_role("admin").
+
+    Usage:
+        @router.get("/admin/endpoint")
+        @require_admin
+        async def admin_endpoint(request: Request):
+            ...
+    """
+    decorated: Callable = require_role("admin")(func)
+    return decorated
 
 
 def require_super_admin(func: Callable) -> Callable:
-    """Shorthand decorator for @require_role("super_admin")."""
-    return require_role("super_admin")(func)  # type: ignore[no-any-return]
+    """Shorthand decorator for @require_role("super_admin").
+
+    Usage:
+        @router.get("/super-admin/endpoint")
+        @require_super_admin
+        async def super_admin_endpoint(request: Request):
+            ...
+    """
+    decorated: Callable = require_role("super_admin")(func)
+    return decorated
