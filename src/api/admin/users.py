@@ -44,14 +44,14 @@ async def list_users(
             {
                 "id": 1,
                 "username": "admin",
-                "email": "admin@bnbong.xyz",
+                "email": "admin@bnbong.com",
                 "role": "admin",
                 "is_active": True,
             },
             {
                 "id": 2,
                 "username": "user",
-                "email": "user@bnbong.xyz",
+                "email": "user@bnbong.com",
                 "role": "user",
                 "is_active": True,
             },
@@ -75,7 +75,7 @@ async def get_user(request: Request, user_id: int) -> dict:
     return {
         "id": user_id,
         "username": f"user{user_id}",
-        "email": f"user{user_id}@bnbong.xyz",
+        "email": f"user{user_id}@bnbong.com",
         "role": "user",
         "is_active": True,
     }

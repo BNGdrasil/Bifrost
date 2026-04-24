@@ -90,14 +90,14 @@ async def get_audit_logs(request: Request, limit: int = 100) -> dict:
         "logs": [
             {
                 "timestamp": "2025-10-24T10:25:00Z",
-                "admin_user": "admin@bnbong.xyz",
+                "admin_user": "admin@bnbong.com",
                 "action": "USER_DELETE",
                 "resource": "users/5",
                 "result": "success",
             },
             {
                 "timestamp": "2025-10-24T10:20:00Z",
-                "admin_user": "admin@bnbong.xyz",
+                "admin_user": "admin@bnbong.com",
                 "action": "SERVICE_RESTART",
                 "resource": "services/auth-server",
                 "result": "success",

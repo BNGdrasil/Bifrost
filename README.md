@@ -676,7 +676,6 @@ Bifrost is part of the larger **[BNGdrasil](https://github.com/BNGdrasil)** clou
 - **🏗️ [Baedalus](https://github.com/BNGdrasil/Baedalus)** - Infrastructure as Code (Terraform)
 - **🌐 [Bsgard](https://github.com/BNGdrasil/Bsgard)** - Custom VPC & Networking
 - **🎨 [Bantheon](https://github.com/BNGdrasil/Bantheon)** - Web Frontend & Portfolio
-- **🎮 [Blysium](https://github.com/BNGdrasil/Blysium)** - Gaming Platform
 
 Each component is designed to work independently while integrating seamlessly with others.
 

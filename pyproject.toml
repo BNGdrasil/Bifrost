@@ -42,7 +42,7 @@ dependencies = [
 
 [project.urls]
 "Source" = "https://github.com/BNGdrasil/Bifrost"
-"Homepage" = "https://bnbong.xyz"
+"Homepage" = "https://bnbong.com"
 "Bug Reports" = "https://github.com/BNGdrasil/Bifrost/issues"
 
 [project.scripts]
