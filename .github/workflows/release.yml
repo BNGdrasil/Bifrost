@@ -1,14 +1,23 @@
 # ---------------------------------------------------------------------------
-# Bifrost release pipeline: test -> build (GHCR, linux/arm64) -> deploy to VM2.
+# Bifrost release pipeline: CI -> build (GHCR, linux/arm64) -> deploy to VM2.
 #
-# ci.yml keeps the full matrix (test / lint / security) for pushes and pull
-# requests. This workflow owns the release path only, and it re-runs the test
-# suite once on its own so that a release is never cut from an untested tree.
+# This workflow does not run tests of its own. It starts from a completed run
+# of ci.yml, which owns the whole verification matrix (test / lint / security),
+# and it only proceeds when that run finished successfully. A release is
+# therefore always cut from a commit whose entire CI passed, not merely from a
+# commit whose unit tests passed.
 # ---------------------------------------------------------------------------
 name: Release
 
 on:
-  push:
+  # A GitHub workflow run reaches the `success` conclusion only when every job
+  # in it succeeded, so "ci.yml concluded success for this commit" is exactly
+  # the same-SHA gate the release path needs. No aggregating job is required in
+  # ci.yml: its test, lint and security jobs all run unconditionally, and a
+  # failure in any one of them turns the run conclusion into `failure`.
+  workflow_run:
+    workflows: [ "CI" ]
+    types: [ completed ]
     branches: [ main ]
   workflow_dispatch:
     inputs:
@@ -21,8 +30,8 @@ on:
         default: ""
       skip_build:
         description: >-
-          Skip the test and build jobs and deploy image_tag as it is.
-          image_tag is required when this is checked.
+          Skip the build job and deploy image_tag as it is. image_tag is
+          required when this is checked.
         required: false
         type: boolean
         default: false
@@ -43,17 +52,85 @@ env:
   SERVICE_NAME: gateway
 
 jobs:
-  # Resolves "build a new image" versus "deploy an existing tag" once, in
-  # shell, so the later jobs compare plain strings instead of repeating a
-  # boolean expression that behaves differently on push and workflow_dispatch.
+  # Resolves three things once, in shell, so that the later jobs compare plain
+  # strings: which commit is being released, whether a new image has to be
+  # built, and whether that commit is allowed to be released at all.
   plan:
     name: Resolve release plan
+    # workflow_run is delivered for every completed CI run, including failed
+    # and cancelled ones, so the conclusion is checked here and the whole job
+    # graph is skipped when it is not `success`. build and deploy both depend
+    # on plan, and deploy additionally requires needs.plan.result == 'success',
+    # so a skipped plan cannot be followed by a deployment.
+    #
+    # SECURITY: a workflow_run run executes from the default branch with a
+    # write-capable token and full access to secrets, even when the CI run that
+    # triggered it came from a fork pull request. The `branches: [ main ]`
+    # filter matches the head branch of the CI run, and a fork's pull request
+    # branch can itself be named "main", so the triggering event and the head
+    # repository are checked as well. Only a push to main in this repository
+    # may reach build and deploy.
+    if: >-
+      github.event_name != 'workflow_run'
+      || (
+        github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push'
+        && github.event.workflow_run.head_branch == 'main'
+        && github.event.workflow_run.head_repository.full_name == github.repository
+      )
     runs-on: ubuntu-latest
-    permissions: {}
+    permissions:
+      # The manual path reads the CI result of the dispatched commit through
+      # the Actions API.
+      contents: read
+      actions: read
     outputs:
       build: ${{ steps.plan.outputs.build }}
       image_ref: ${{ steps.plan.outputs.image_ref }}
+      sha: ${{ steps.commit.outputs.sha }}
+      short_sha: ${{ steps.commit.outputs.short_sha }}
+      is_main: ${{ steps.commit.outputs.is_main }}
     steps:
+      - name: Resolve the commit under release
+        id: commit
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          DISPATCH_SHA: ${{ github.sha }}
+          DISPATCH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          # On a workflow_run event GITHUB_SHA and GITHUB_REF describe the
+          # default branch as it stood when the event was delivered, not the
+          # commit CI actually verified. Those two can differ as soon as a
+          # second push lands, so everything downstream uses head_sha instead.
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            sha="${RUN_HEAD_SHA:-}"
+            branch="${RUN_HEAD_BRANCH:-}"
+          else
+            sha="${DISPATCH_SHA:-}"
+            branch="${DISPATCH_REF#refs/heads/}"
+          fi
+
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::Could not resolve a 40 character commit SHA for this run (got '${sha}')." >&2
+            exit 1
+          fi
+
+          is_main=false
+          if [ "$branch" = "main" ]; then
+            is_main=true
+          fi
+
+          {
+            echo "sha=${sha}"
+            echo "short_sha=${sha:0:7}"
+            echo "branch=${branch}"
+            echo "is_main=${is_main}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing ${sha} from branch '${branch}'."
+
       - name: Decide whether to build
         id: plan
         env:
@@ -84,38 +161,49 @@ jobs:
             echo "image_ref=" >> "$GITHUB_OUTPUT"
           fi
 
-  test:
-    name: Test
-    needs: plan
-    if: needs.plan.outputs.build == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: latest
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: uv sync --locked --group dev
-
-      # ci.yml covers the PostgreSQL run. One SQLite run is enough here,
-      # because this job guards the release rather than replacing CI.
-      - name: Run tests
+      - name: Require a successful CI run for this commit
+        # Only the manual "build new code" path needs this. The workflow_run
+        # path is already gated by the job-level `if`, and the image_tag path
+        # redeploys an image that was itself built through one of those gates.
+        if: github.event_name == 'workflow_dispatch' && steps.plan.outputs.build == 'true'
         env:
-          DATABASE_URL: "sqlite:///:memory:"
-          SECRET_KEY: ci-only-secret-key-not-for-production-use
-          ENVIRONMENT: test
-          DEBUG: "false"
-        run: uv run pytest -q
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          # The query is pinned to head_sha, so this asks "did CI pass on this
+          # exact commit". The most recent success of CI on some other commit
+          # is deliberately not accepted: that is the hole this check closes.
+          runs="$(gh api --paginate \
+            "repos/${REPO}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=100" \
+            --jq '.workflow_runs[] | [.status, .conclusion, .html_url] | @tsv')"
+
+          if [ -z "$runs" ]; then
+            echo "::error::No CI workflow run exists for ${SHA}. Push the commit and let CI finish before releasing it." >&2
+            exit 1
+          fi
+
+          echo "CI runs found for ${SHA}:"
+          printf '%s\n' "$runs"
+
+          unfinished="$(printf '%s\n' "$runs" | awk -F'\t' '$1 != "completed"' | wc -l | tr -d ' ')"
+          if [ "$unfinished" != "0" ]; then
+            echo "::error::CI for ${SHA} has not finished yet (${unfinished} run(s) still in progress). Wait for it and dispatch again." >&2
+            exit 1
+          fi
+
+          unsuccessful="$(printf '%s\n' "$runs" | awk -F'\t' '$2 != "success"' | wc -l | tr -d ' ')"
+          if [ "$unsuccessful" != "0" ]; then
+            echo "::error::CI for ${SHA} did not succeed (${unsuccessful} run(s) concluded with something other than success). Refusing to release this commit." >&2
+            exit 1
+          fi
+
+          echo "CI succeeded for ${SHA}."
 
   build:
     name: Build and push image
-    needs: [ plan, test ]
+    needs: plan
     if: needs.plan.outputs.build == 'true'
     # Native arm64 runner. VM2 is aarch64, so no emulation is involved and the
     # build takes roughly as long as it does on x86.
@@ -139,6 +227,11 @@ jobs:
       image_ref: ${{ steps.ref.outputs.image_ref }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The verified commit, not github.sha. On a workflow_run event
+          # github.sha is the default branch head at delivery time, which may
+          # already have moved past the commit CI approved.
+          ref: ${{ needs.plan.outputs.sha }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -155,9 +248,13 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          # Spelled out as raw values because the built-in type=sha reads
+          # github.sha, which is the wrong commit on a workflow_run event.
           tags: |
-            type=sha,format=short,prefix=sha-
-            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=sha-${{ needs.plan.outputs.short_sha }}
+            type=raw,value=main,enable=${{ needs.plan.outputs.is_main == 'true' }}
+          labels: |
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sha }}
 
       - name: Build and push
         id: build
@@ -188,8 +285,8 @@ jobs:
     name: Deploy to VM2
     needs: [ plan, build ]
     # Runs after a successful build, or straight after plan when an existing
-    # tag is being redeployed. Written out in full so that a failed test job,
-    # which leaves build in the "skipped" state, cannot reach deploy.
+    # tag is being redeployed. Written out in full so that a skipped plan,
+    # which is how a failed or forged CI run is rejected, cannot reach deploy.
     if: >-
       always()
       && needs.plan.result == 'success'

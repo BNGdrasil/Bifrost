@@ -147,26 +147,61 @@ docker run -p 8000:8000 --env-file .env bifrost
 
 ## 운영 배포 (GitHub Actions)
 
-`main` 브랜치에 커밋이 반영되면 `.github/workflows/release.yml`이 실행되어, 컨테이너 이미지를 빌드하고 운영 VM2의 gateway 컨테이너를 교체한다. 기존 `ci.yml`은 그대로 유지되며, 전체 테스트 행렬과 린트, 보안 점검은 계속 그쪽에서 담당한다.
+`main` 브랜치에 커밋이 반영되면 먼저 `.github/workflows/ci.yml`이 실행되고, 그 실행이 성공으로 끝났을 때에만 `.github/workflows/release.yml`이 이어서 실행되어 컨테이너 이미지를 빌드하고 운영 VM2의 gateway 컨테이너를 교체한다. release 워크플로는 더 이상 자체 테스트 job을 가지고 있지 않으며, 전체 테스트 행렬과 린트, 보안 점검은 모두 `ci.yml`이 담당한다.
+
+### 트리거와 CI 연동
+
+`ci.yml`은 `main`과 `dev` 브랜치 push, 그리고 `main`을 대상으로 하는 pull request에서 실행된다. release는 이 가운데 `main` push에서 시작된 CI 실행을 `workflow_run` 이벤트로 넘겨받는다.
+
+```
+main 브랜치에 push
+        │
+        ▼
+  CI (ci.yml)
+  ├─ test      : Python 3.12 / 3.13 행렬에서 PostgreSQL과 SQLite를 대상으로 pytest 실행
+  ├─ lint      : black, isort, flake8, mypy 실행
+  └─ security  : bandit, pip-audit 실행
+        │
+        ├─ 세 job 가운데 하나라도 실패하면 실행 결론이 failure가 된다.
+        │      └─ Release의 plan job이 건너뛰어지고, build와 deploy도 실행되지 않는다.
+        │
+        └─ 세 job이 모두 성공하면 실행 결론이 success가 된다.
+               │
+               ▼
+        Release (release.yml)
+        plan ──→ build ──→ deploy (production 환경)
+```
+
+GitHub는 실행에 포함된 모든 job이 성공했을 때에만 워크플로 실행의 결론을 `success`로 기록한다. `ci.yml`의 세 job은 별도의 조건 없이 항상 실행되므로, 결론이 `success`라는 사실은 곧 test와 lint, security가 같은 커밋에서 모두 통과했다는 뜻이다. 따라서 결과를 한 번 더 모으는 집계 job을 `ci.yml`에 추가하지 않았다. 다만 앞으로 `ci.yml`에 `if` 조건이나 `continue-on-error`가 붙은 job을 추가한다면 이 전제가 깨지므로, 그런 변경을 할 때에는 집계 job을 두는 방안을 함께 검토해야 한다.
+
+release가 다루는 커밋은 언제나 `github.event.workflow_run.head_sha`이다. `workflow_run` 이벤트에서 `github.sha`는 이벤트가 전달된 시점의 기본 브랜치 최신 커밋을 가리키기 때문에, CI가 실제로 검증한 커밋과 어긋날 수 있다. 소스 checkout과 `sha-<짧은 커밋 해시>` 이미지 태그, 이미지 라벨의 revision 값은 모두 이 `head_sha`를 기준으로 삼는다.
+
+`workflow_run`으로 시작된 실행은 기본 브랜치에 정의된 내용을 따라 동작하며, 이때 secrets와 쓰기 권한이 있는 토큰을 사용할 수 있다. CI를 유발한 쪽이 fork의 pull request였더라도 이 점은 달라지지 않는다. 게다가 `branches: [ main ]` 필터는 CI 실행의 head 브랜치 이름만 비교하므로, fork 쪽 브랜치 이름이 `main`이면 이 필터를 그대로 통과한다. 그래서 `plan` job의 `if` 조건에서 `workflow_run.event == 'push'`와 `workflow_run.head_repository.full_name == github.repository`를 함께 확인하여, 이 저장소의 `main` push에서 시작된 실행만 배포까지 이어지도록 막아 두었다.
 
 ### 워크플로 구성
 
-워크플로는 다음 네 개의 job으로 이루어져 있다.
+워크플로는 다음 세 개의 job으로 이루어져 있다.
 
 | job | 실행 환경 | 하는 일 |
 | --- | --- | --- |
-| `plan` | `ubuntu-latest` | 새 이미지를 빌드할지, 아니면 이미 올라가 있는 태그를 그대로 배포할지 결정한다. |
-| `test` | `ubuntu-latest` | `uv sync --locked --group dev` 이후 SQLite를 대상으로 `pytest`를 한 번 실행한다. 검증되지 않은 트리에서 release가 나가지 않도록 막는 역할이다. PostgreSQL 대상 실행은 `ci.yml`이 담당한다. |
+| `plan` | `ubuntu-latest` | 배포 대상 커밋을 확정하고, 새 이미지를 빌드할지 아니면 이미 올라가 있는 태그를 그대로 배포할지 결정한다. 수동 실행으로 새 코드를 빌드하는 경우에는 같은 커밋의 CI 성공 여부도 이 job에서 확인한다. |
 | `build` | `ubuntu-24.04-arm` | `ghcr.io/bngdrasil/bifrost` 이미지를 `linux/arm64`로 빌드하여 push한다. 태그는 `sha-<짧은 커밋 해시>`와 `main` 두 가지이고, 이후 단계에는 digest로 고정된 참조를 넘긴다. |
 | `deploy` | `ubuntu-latest` | `production` 환경에서 VM2에 SSH로 접속하여 `sudo /opt/bnbong/deploy-image.sh gateway <이미지 참조>`를 실행하고, 그 뒤에 공개 엔드포인트로 smoke 확인을 한 번 수행한다. |
-
-트리거는 `main` 브랜치 push와 `workflow_dispatch` 두 가지이다. `workflow_dispatch`는 `image_tag`와 `skip_build` 두 개의 입력을 받으며, 두 입력은 롤백에 사용한다.
 
 `deploy` job에는 `concurrency: vm2-deploy` 그룹이 걸려 있다. VM2에는 compose 프로젝트가 하나뿐이므로, 두 개의 배포가 동시에 컨테이너를 교체하지 않도록 뒤에 들어온 실행을 취소하지 않고 대기시킨다.
 
 배포 이후의 smoke 확인은 `curl -fsS https://api.bnbong.com/health`를 한 번 호출하는 방식이다. VM1 Nginx의 `api.bnbong.com` 서버 블록에서 `location /`이 gateway upstream으로 향하므로, 이 요청 하나로 Cloudflare와 Nginx, Bifrost까지 이어지는 경로 전체를 확인할 수 있다. 컨테이너 자체의 `/health`와 `/ready` 확인은 그 앞 단계에서 `deploy-image.sh`가 이미 수행한다.
 
 실제 컨테이너 교체는 Baedalus 저장소가 제공하는 `deploy-image.sh`가 담당한다. 이 스크립트는 이미지를 pull하고, 직전 이미지를 `rollback/<컨테이너>:<UTC 시각>`으로 태그해 두고, `/opt/bnbong/.env`의 `GATEWAY_IMAGE` 값을 갱신한 뒤 `docker compose up -d --no-deps gateway`를 실행하며, health 확인에 실패하면 직전 이미지로 스스로 되돌리고 0이 아닌 코드로 종료한다. 워크플로는 이 종료 코드만 신뢰하며, 배포 절차 자체를 다시 구현하지 않는다.
+
+### 수동 실행(`workflow_dispatch`)의 두 가지 경로
+
+수동 실행은 목적에 따라 서로 다른 규칙을 적용받는다.
+
+1. `image_tag`를 입력한 경우에는 롤백 전용 예외 경로로 동작한다. 이미 GHCR에 올라가 있는 이미지를 그대로 다시 배포할 뿐이고, 새로 빌드하지 않는다. 그 이미지는 과거에 CI 게이트를 통과한 커밋에서 만들어진 산출물이므로, CI 결과를 다시 조회하지 않는다. 장애가 발생했을 때 곧바로 이전 버전으로 되돌릴 수 있도록 남겨 둔 예외이다.
+2. `image_tag`를 비워 둔 채 수동으로 실행한 경우에는 새 코드를 빌드하는 경로이므로, `workflow_run` 경로와 같은 기준을 적용한다. `plan` job이 GitHub Actions API에 `repos/<owner>/<repo>/actions/workflows/ci.yml/runs?head_sha=<대상 커밋>`을 조회하여, 바로 그 커밋에 대한 CI 실행이 존재하고 모두 완료되었으며 전부 `success`로 끝났는지 확인한다. 아직 끝나지 않은 실행이 있거나, 실패나 취소로 끝난 실행이 하나라도 있거나, 성공 기록이 아예 없으면 어떤 조건이 어긋났는지 밝히는 오류 메시지와 함께 중단된다. 다른 커밋에서 가장 최근에 성공한 CI 실행을 대신 인정하는 동작은 의도적으로 넣지 않았다.
+
+이 조회를 수행하기 위해 `plan` job에 `actions: read` 권한을 부여했다.
 
 ### 필요한 secrets와 environment
 
@@ -191,11 +226,20 @@ GHCR에 push할 때 쓰는 자격 증명은 별도로 등록하지 않는다. `b
 
 ### 롤백 방법
 
-Actions 화면에서 `Release` 워크플로를 선택한 뒤 `Run workflow`를 누르고, `image_tag`에 되돌리려는 커밋의 태그를 `sha-1a2b3c4` 형식으로 입력한다. `image_tag`를 지정하면 `test`와 `build` job을 건너뛰고 그 태그를 그대로 배포한다. `skip_build`를 체크하는 경우에도 `image_tag`는 반드시 함께 입력해야 하며, 비어 있으면 `plan` job이 오류로 중단된다.
+Actions 화면에서 `Release` 워크플로를 선택한 뒤 `Run workflow`를 누르고, `image_tag`에 되돌리려는 커밋의 태그를 `sha-1a2b3c4` 형식으로 입력한다. `image_tag`를 지정하면 `build` job을 건너뛰고 그 태그를 그대로 배포한다. `skip_build`를 체크하는 경우에도 `image_tag`는 반드시 함께 입력해야 하며, 비어 있으면 `plan` job이 오류로 중단된다. 앞의 "수동 실행의 두 가지 경로"에서 설명한 대로, 이 경로는 CI 결과를 다시 확인하지 않는 예외에 해당한다.
 
 다만 이 저장소의 롤백에는 아래 "운영 배포 시 주의 사항"에 적힌 제약이 그대로 적용된다. 인증 없는 관리 엔드포인트가 남아 있는 과거 이미지로 되돌리는 경우, Nginx의 차단 규칙이 유지되고 있는지 먼저 확인해야 한다.
 
 VM2에서 직접 되돌려야 하는 상황이라면 `deploy-image.sh`가 남겨 둔 `rollback/vm2-gateway:<UTC 시각>` 태그를 사용할 수 있다. 다만 이 경로로 되돌린 내용은 GitHub 쪽 기록에 남지 않으므로, 이후에 `image_tag`를 사용한 배포로 상태를 맞추어 두는 편이 좋다.
+
+### 실제 Actions에서 확인해야 할 항목
+
+지금까지 이 구성은 YAML 파싱과 actionlint 검사, 워크플로에 포함된 셸 스크립트의 문법 검사까지만 마쳤다. 다음 항목은 실제 GitHub Actions 실행으로 확인해야 한다.
+
+- 단위 테스트는 통과하지만 lint 또는 security가 실패하는 커밋을 `main`에 push했을 때, Release의 `plan` job이 건너뛰어지고 `build`와 `deploy`가 전혀 실행되지 않는지 확인해야 한다.
+- 세 job이 모두 성공한 커밋에서는 Release가 이어서 실행되고, 빌드된 이미지의 `sha-` 태그가 CI가 검증한 커밋의 짧은 해시와 일치하는지 확인해야 한다.
+- `image_tag`를 비워 둔 채 수동으로 실행했을 때, CI가 실패했거나 아직 끝나지 않은 커밋에서는 `plan` job이 오류 메시지와 함께 중단되는지 확인해야 한다.
+- `production` 환경에 설정한 승인 규칙과 배포 브랜치 정책이 실제 실행에서 적용되는지 확인해야 한다.
 
 ## 운영 배포 시 주의 사항
 
