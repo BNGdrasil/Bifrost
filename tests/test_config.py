@@ -41,9 +41,9 @@ class TestCorsParser:
         assert result == input_list
 
     def test_parse_cors_json_string(self):
-        """Test parsing CORS origins from JSON-like string"""
+        """Test parsing CORS origins from a JSON list string"""
         result = parse_cors('["http://localhost:3000", "http://localhost:3001"]')
-        assert result == '["http://localhost:3000", "http://localhost:3001"]'
+        assert result == ["http://localhost:3000", "http://localhost:3001"]
 
     def test_parse_cors_string_with_spaces(self):
         """Test parsing CORS origins with spaces"""
@@ -93,9 +93,11 @@ class TestSettings:
         assert hasattr(settings, "PROJECT_NAME")
         assert hasattr(settings, "ENVIRONMENT")
         assert hasattr(settings, "SECRET_KEY")
-        assert hasattr(settings, "ALLOWED_ORIGINS")
+        assert hasattr(settings, "BACKEND_CORS_ORIGINS")
         assert hasattr(settings, "AUTH_SERVER_URL")
-        assert hasattr(settings, "REDIS_URL")
+        # Settings that nothing reads must not be declared (SEC-06).
+        assert not hasattr(settings, "REDIS_URL")
+        assert not hasattr(settings, "SERVICES_CONFIG_PATH")
         assert hasattr(settings, "DATABASE_URL")
 
         # Test that computed fields work
@@ -170,14 +172,6 @@ class TestSettings:
             settings = Settings()
             assert settings.DATABASE_URL == "postgresql://user:pass@db:5432/testdb"
 
-    def test_redis_url_configuration(self):
-        """Test Redis URL configuration"""
-        env_vars = {"REDIS_URL": "redis://redis-server:6380/1"}
-
-        with patch.dict(os.environ, env_vars):
-            settings = Settings()
-            assert settings.REDIS_URL == "redis://redis-server:6380/1"
-
     def test_auth_server_url_configuration(self):
         """Test auth server URL configuration"""
         env_vars = {"AUTH_SERVER_URL": "http://auth.example.com:8001"}
@@ -185,14 +179,6 @@ class TestSettings:
         with patch.dict(os.environ, env_vars):
             settings = Settings()
             assert settings.AUTH_SERVER_URL == "http://auth.example.com:8001"
-
-    def test_services_config_path(self):
-        """Test services configuration path"""
-        env_vars = {"SERVICES_CONFIG_PATH": "/custom/path/services.json"}
-
-        with patch.dict(os.environ, env_vars):
-            settings = Settings()
-            assert settings.SERVICES_CONFIG_PATH == "/custom/path/services.json"
 
     def test_secret_key_generation(self):
         """Test that SECRET_KEY is generated if not provided"""
@@ -384,7 +370,9 @@ class TestSettingsEdgeCases:
         """Test configuration with special characters"""
         env_vars = {
             "SECRET_KEY": "key-with-special-chars!@#$%^&*()",
-            "DATABASE_URL": "postgresql://user:pass@host:5432/db?sslmode=require&charset=utf8",
+            "DATABASE_URL": (
+                "postgresql://user:pass@host:5432/db?sslmode=require&charset=utf8"
+            ),
         }
 
         with patch.dict(os.environ, env_vars):
@@ -401,3 +389,97 @@ class TestSettingsEdgeCases:
         with patch.dict(os.environ, env_vars):
             settings = Settings()
             assert "유니코드" in settings.SECRET_KEY
+
+
+class TestProductionStartupGuards:
+    """SEC-05: production must refuse example or missing secrets"""
+
+    VALID_KEY = "p" * 40
+    VALID_DB = "postgresql://user:pass@db:5432/bifrost"
+
+    def test_production_requires_secret_key(self):
+        with pytest.raises(ValueError, match="SECRET_KEY"):
+            Settings(
+                _env_file=None,
+                ENVIRONMENT="production",
+                SECRET_KEY="",
+                DATABASE_URL=self.VALID_DB,
+            )
+
+    def test_production_rejects_example_secret_key(self):
+        with pytest.raises(ValueError, match="example value"):
+            Settings(
+                _env_file=None,
+                ENVIRONMENT="production",
+                SECRET_KEY="your-secret-key-here",
+                DATABASE_URL=self.VALID_DB,
+            )
+
+    def test_production_rejects_short_secret_key(self):
+        with pytest.raises(ValueError, match="at least"):
+            Settings(
+                _env_file=None,
+                ENVIRONMENT="production",
+                SECRET_KEY="short-key",
+                DATABASE_URL=self.VALID_DB,
+            )
+
+    def test_production_requires_database_url(self):
+        with pytest.raises(ValueError, match="DATABASE_URL"):
+            Settings(
+                _env_file=None,
+                ENVIRONMENT="production",
+                SECRET_KEY=self.VALID_KEY,
+                DATABASE_URL="",
+            )
+
+    def test_production_accepts_valid_configuration(self):
+        settings = Settings(
+            _env_file=None,
+            ENVIRONMENT="production",
+            SECRET_KEY=self.VALID_KEY,
+            DATABASE_URL=self.VALID_DB,
+            BACKEND_CORS_ORIGINS="https://bnbong.com",
+            ALLOWED_HOSTS="api.bnbong.com",
+        )
+        assert settings.DATABASE_URL == self.VALID_DB
+        assert settings.all_cors_origins == ["https://bnbong.com"]
+        assert settings.ALLOWED_HOSTS == ["api.bnbong.com"]
+
+    def test_non_production_falls_back_to_defaults(self):
+        settings = Settings(
+            _env_file=None,
+            ENVIRONMENT="development",
+            SECRET_KEY="",
+            DATABASE_URL="",
+        )
+        assert settings.DATABASE_URL
+        assert len(settings.SECRET_KEY) >= 32
+
+
+class TestListParsing:
+    """Compose passes both comma separated strings and JSON lists"""
+
+    def test_allowed_hosts_accepts_json_list(self):
+        settings = Settings(_env_file=None, ALLOWED_HOSTS='["a.example", "b.example"]')
+        assert settings.ALLOWED_HOSTS == ["a.example", "b.example"]
+
+    def test_allowed_hosts_accepts_comma_string(self):
+        settings = Settings(_env_file=None, ALLOWED_HOSTS="a.example, b.example")
+        assert settings.ALLOWED_HOSTS == ["a.example", "b.example"]
+
+    def test_allowed_hosts_accepts_wildcard(self):
+        settings = Settings(_env_file=None, ALLOWED_HOSTS='["*"]')
+        assert settings.ALLOWED_HOSTS == ["*"]
+
+    def test_cors_origins_accept_json_list(self):
+        settings = Settings(
+            _env_file=None,
+            BACKEND_CORS_ORIGINS='["http://a.example", "http://b.example"]',
+            CLIENT_ORIGIN="",
+        )
+        assert settings.all_cors_origins == ["http://a.example", "http://b.example"]
+
+    def test_exempt_paths_are_configurable(self):
+        settings = Settings(_env_file=None, RATE_LIMIT_EXEMPT_PATHS="/health,/ready")
+        assert settings.RATE_LIMIT_EXEMPT_PATHS == ["/health", "/ready"]

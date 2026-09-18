@@ -1,0 +1,279 @@
+# ---------------------------------------------------------------------------
+# Bifrost release pipeline: test -> build (GHCR, linux/arm64) -> deploy to VM2.
+#
+# ci.yml keeps the full matrix (test / lint / security) for pushes and pull
+# requests. This workflow owns the release path only, and it re-runs the test
+# suite once on its own so that a release is never cut from an untested tree.
+# ---------------------------------------------------------------------------
+name: Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: >-
+          Existing ghcr.io/bngdrasil/bifrost tag to deploy without rebuilding,
+          for example "sha-1a2b3c4". Used for rollbacks.
+        required: false
+        type: string
+        default: ""
+      skip_build:
+        description: >-
+          Skip the test and build jobs and deploy image_tag as it is.
+          image_tag is required when this is checked.
+        required: false
+        type: boolean
+        default: false
+
+# Every job narrows this further. The default is read-only.
+permissions:
+  contents: read
+
+# Releases for the same ref queue up instead of cancelling each other, because
+# a cancelled run could leave VM2 half way through a container replacement.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/bngdrasil/bifrost
+  # docker compose service name on VM2 (/opt/bnbong/docker-compose.yml).
+  SERVICE_NAME: gateway
+
+jobs:
+  # Resolves "build a new image" versus "deploy an existing tag" once, in
+  # shell, so the later jobs compare plain strings instead of repeating a
+  # boolean expression that behaves differently on push and workflow_dispatch.
+  plan:
+    name: Resolve release plan
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      image_ref: ${{ steps.plan.outputs.image_ref }}
+    steps:
+      - name: Decide whether to build
+        id: plan
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          SKIP_BUILD: ${{ inputs.skip_build }}
+        run: |
+          set -euo pipefail
+          image_tag="${IMAGE_TAG:-}"
+          skip_build="${SKIP_BUILD:-false}"
+
+          if [ -n "$image_tag" ] || [ "$skip_build" = "true" ]; then
+            if [ -z "$image_tag" ]; then
+              echo "::error::skip_build was requested without an image_tag." >&2
+              exit 1
+            fi
+            # Reject anything that is not a plain OCI tag, because the value
+            # ends up in a remote command line.
+            case "$image_tag" in
+              *[!A-Za-z0-9._-]*)
+                echo "::error::image_tag may only contain A-Z a-z 0-9 . _ and -" >&2
+                exit 1
+                ;;
+            esac
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "image_ref=${IMAGE_NAME}:${image_tag}" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "image_ref=" >> "$GITHUB_OUTPUT"
+          fi
+
+  test:
+    name: Test
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --locked --group dev
+
+      # ci.yml covers the PostgreSQL run. One SQLite run is enough here,
+      # because this job guards the release rather than replacing CI.
+      - name: Run tests
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+          SECRET_KEY: ci-only-secret-key-not-for-production-use
+          ENVIRONMENT: test
+          DEBUG: "false"
+        run: uv run pytest -q
+
+  build:
+    name: Build and push image
+    needs: [ plan, test ]
+    if: needs.plan.outputs.build == 'true'
+    # Native arm64 runner. VM2 is aarch64, so no emulation is involved and the
+    # build takes roughly as long as it does on x86.
+    #
+    # If this runner label ever becomes unavailable (it requires a public
+    # repository), fall back to emulation by adding the QEMU step below and
+    # keeping the same platforms value:
+    #
+    #   - name: Set up QEMU
+    #     uses: docker/setup-qemu-action@v3
+    #     with:
+    #       platforms: arm64
+    #
+    # The emulated build is several times slower, so treat it as a stopgap.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      image_ref: ${{ steps.ref.outputs.image_ref }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=short,prefix=sha-
+            type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          # Docker 28 on VM2 pulls these images directly. Attestation
+          # manifests would turn the tag into an index that older tooling
+          # reads as a multi-platform image with no usable entry.
+          provenance: false
+          sbom: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Publish the digest reference
+        id: ref
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          echo "image_ref=${IMAGE_NAME}@${DIGEST}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to VM2
+    needs: [ plan, build ]
+    # Runs after a successful build, or straight after plan when an existing
+    # tag is being redeployed. Written out in full so that a failed test job,
+    # which leaves build in the "skipped" state, cannot reach deploy.
+    if: >-
+      always()
+      && needs.plan.result == 'success'
+      && (
+        (needs.plan.outputs.build == 'true' && needs.build.result == 'success')
+        || (needs.plan.outputs.build == 'false' && needs.build.result == 'skipped')
+      )
+    runs-on: ubuntu-latest
+    # Approvals, wait timers and the deployment branch policy are configured on
+    # this environment in the repository settings, not here.
+    environment: production
+    # VM2 holds one docker compose project, so two releases must not replace
+    # containers at the same time. Queue instead of cancelling: a cancelled
+    # deploy could leave the rollback half done.
+    concurrency:
+      group: vm2-deploy
+      cancel-in-progress: false
+    permissions: {}
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.VM2_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.VM2_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/vm2_deploy_key
+          chmod 600 ~/.ssh/vm2_deploy_key
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Resolve the image reference
+        id: image
+        env:
+          BUILD_IMAGE_REF: ${{ needs.build.outputs.image_ref }}
+          PLAN_IMAGE_REF: ${{ needs.plan.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          image_ref="${BUILD_IMAGE_REF:-}"
+          if [ -z "$image_ref" ]; then
+            image_ref="${PLAN_IMAGE_REF:-}"
+          fi
+          if [ -z "$image_ref" ]; then
+            echo "::error::No image reference to deploy." >&2
+            exit 1
+          fi
+          case "$image_ref" in
+            *[!A-Za-z0-9._/:@-]*)
+              echo "::error::Refusing to deploy an image reference with shell metacharacters." >&2
+              exit 1
+              ;;
+          esac
+          echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
+          echo "Deploying ${image_ref}"
+
+      - name: Replace the container on VM2
+        env:
+          VM2_HOST: ${{ secrets.VM2_HOST }}
+          VM2_USER: ${{ secrets.VM2_USER || 'ubuntu' }}
+          IMAGE_REF: ${{ steps.image.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          # deploy-image.sh (installed from the Baedalus repository) pulls the
+          # image, tags the previous one for rollback, updates GATEWAY_IMAGE in
+          # /opt/bnbong/.env, recreates the service and probes /health and
+          # /ready. It rolls back and exits non-zero on failure, so the exit
+          # code is the only signal this step needs.
+          ssh -i ~/.ssh/vm2_deploy_key \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              "${VM2_USER}@${VM2_HOST}" \
+              "sudo /opt/bnbong/deploy-image.sh ${SERVICE_NAME} ${IMAGE_REF}"
+
+      - name: Smoke check through the public endpoint
+        run: |
+          set -euo pipefail
+          # The VM1 Nginx "location /" block on api.bnbong.com proxies to the
+          # gateway upstream, so this exercises Cloudflare, Nginx and Bifrost
+          # in one request. deploy-image.sh has already checked /health and
+          # /ready on the host itself.
+          curl -fsS --max-time 15 https://api.bnbong.com/health
+
+      - name: Remove the deploy key
+        if: always()
+        run: rm -f ~/.ssh/vm2_deploy_key

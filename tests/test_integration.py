@@ -9,8 +9,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.orm import Session
 
-from src.crud.service import create_service, get_service_by_name
-from src.schemas.service import ServiceCreate
+from src.crud.service import get_service_by_name
 
 
 @pytest.mark.integration
@@ -198,13 +197,12 @@ class TestConcurrency:
         tasks = [create_service_task(i) for i in range(5)]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Most should succeed
-        success_count = sum(
-            1
-            for r in responses
-            if not isinstance(r, Exception) and r.status_code == 201
-        )
-        assert success_count >= 4  # Allow for some failures
+        # Every concurrent create must succeed. A partial success would mean
+        # the gateway loses writes under load.
+        for response in responses:
+            assert not isinstance(response, Exception), response
+        success_count = sum(1 for r in responses if r.status_code == 201)
+        assert success_count == 5
 
     @pytest.mark.asyncio
     async def test_concurrent_reads(self, client: AsyncClient):

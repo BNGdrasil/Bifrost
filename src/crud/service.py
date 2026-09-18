@@ -3,7 +3,7 @@
 #
 # @author bnbong bbbong9@gmail.com
 # --------------------------------------------------------------------------
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from sqlalchemy import func, select
@@ -31,9 +31,21 @@ def get_services(
     """Get list of services"""
     query = select(Service)
     if active_only:
-        query = query.filter(Service.is_active == True)
+        query = query.filter(Service.is_active.is_(True))
     query = query.offset(skip).limit(limit)
     result = db.execute(query)
+    return list(result.scalars().all())
+
+
+def get_all_active_services(db: Session) -> List[Service]:
+    """Get every active service without pagination.
+
+    The service registry must load the complete routing table, so it must not
+    reuse the paginated listing used by the admin UI.
+    """
+    result = db.execute(
+        select(Service).filter(Service.is_active.is_(True)).order_by(Service.name)
+    )
     return list(result.scalars().all())
 
 
@@ -94,7 +106,7 @@ def update_service_health(
         return None
 
     setattr(db_service, "health_status", health_status)
-    setattr(db_service, "last_health_check", datetime.now())
+    setattr(db_service, "last_health_check", datetime.now(timezone.utc))
 
     db.commit()
     db.refresh(db_service)
@@ -109,7 +121,7 @@ def get_service_stats(db: Session) -> ServiceStats:
 
     # Active services
     active_result = db.execute(
-        select(func.count(Service.id)).filter(Service.is_active == True)
+        select(func.count(Service.id)).filter(Service.is_active.is_(True))
     )
     active_services = active_result.scalar() or 0
 

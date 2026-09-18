@@ -86,6 +86,15 @@ VALUES
     ('admin', 'admin@example.com', 'Admin User', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5ux8E4QI.XDsu', true, true, 'admin')
 ON CONFLICT (username) DO NOTHING;
 
--- Grant necessary permissions
+-- Grant necessary permissions to the test role, creating it when the database
+-- was provisioned with a different owner (for example the CI service image).
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'testuser') THEN
+        CREATE ROLE testuser LOGIN PASSWORD 'testpass';
+    END IF;
+END
+$$;
+
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO testuser;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO testuser;

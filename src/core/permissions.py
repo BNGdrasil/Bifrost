@@ -3,8 +3,9 @@
 #
 # @author bnbong bbbong9@gmail.com
 # --------------------------------------------------------------------------
+from contextlib import asynccontextmanager
 from functools import wraps
-from typing import Callable
+from typing import AsyncIterator, Callable, Optional
 
 import httpx
 from fastapi import HTTPException, Request, status
@@ -12,12 +13,27 @@ from fastapi import HTTPException, Request, status
 from src.core.config import settings
 
 
-async def verify_role_with_auth_server(token: str, required_role: str) -> dict:
+@asynccontextmanager
+async def _client_scope(
+    client: Optional[httpx.AsyncClient],
+) -> AsyncIterator[httpx.AsyncClient]:
+    """Reuse the process wide HTTP client when one is available."""
+    if client is not None:
+        yield client
+        return
+    async with httpx.AsyncClient() as fallback:
+        yield fallback
+
+
+async def verify_role_with_auth_server(
+    token: str, required_role: str, client: Optional[httpx.AsyncClient] = None
+) -> dict:
     """Verify user role with Bidar Auth Server.
 
     Args:
         token: JWT access token
         required_role: Minimum role required
+        client: Shared HTTP client, taken from the application state
 
     Returns:
         dict: User information from auth server
@@ -27,9 +43,9 @@ async def verify_role_with_auth_server(token: str, required_role: str) -> dict:
     """
     auth_server_url = settings.AUTH_SERVER_URL
 
-    async with httpx.AsyncClient() as client:
+    async with _client_scope(client) as http_client:
         try:
-            response = await client.post(
+            response = await http_client.post(
                 f"{auth_server_url}/rbac/verify-permission",
                 json={"required_role": required_role},
                 headers={"Authorization": f"Bearer {token}"},
@@ -45,7 +61,10 @@ async def verify_role_with_auth_server(token: str, required_role: str) -> dict:
             elif response.status_code == 403:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"Forbidden - Insufficient permissions. Required role: {required_role}",
+                    detail=(
+                        "Forbidden - Insufficient permissions. "
+                        f"Required role: {required_role}"
+                    ),
                 )
             elif response.status_code != 200:
                 raise HTTPException(
@@ -92,7 +111,10 @@ def require_role(required_role: str = "admin") -> Callable:
             if not request:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Request object not found. Make sure to include 'request: Request' parameter.",
+                    detail=(
+                        "Request object not found. Make sure to include "
+                        "'request: Request' parameter."
+                    ),
                 )
 
             # Extract token from Authorization header
@@ -106,8 +128,11 @@ def require_role(required_role: str = "admin") -> Callable:
 
             token = authorization.replace("Bearer ", "")
 
-            # Verify role with auth server
-            user_info = await verify_role_with_auth_server(token, required_role)
+            # Verify role with auth server using the shared HTTP client
+            shared_client = getattr(request.app.state, "http_client", None)
+            user_info = await verify_role_with_auth_server(
+                token, required_role, client=shared_client
+            )
 
             # Add user info to request state for access in endpoint
             request.state.user = user_info

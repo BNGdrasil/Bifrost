@@ -110,7 +110,9 @@ ipython_config.py
 .pdm.toml
 
 # uv
-uv.lock
+# The lock file is tracked so that CI and the production image build from
+# the exact same resolution.
+!uv.lock
 
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/

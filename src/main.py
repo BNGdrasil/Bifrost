@@ -5,22 +5,28 @@
 # @author bnbong bbbong9@gmail.com
 # --------------------------------------------------------------------------
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, Dict
 
 import structlog
 import uvicorn
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from prometheus_client import REGISTRY, Counter, Histogram
-from prometheus_client.openmetrics.exposition import generate_latest
+from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, REGISTRY, generate_latest
+from starlette.concurrency import run_in_threadpool
 
 from src import __version__
 from src.api.admin import admin_router
 from src.api.api import router as api_router
 from src.core.config import settings
-from src.core.middleware import LoggingMiddleware, RateLimitMiddleware
-from src.services.services import ServiceRegistry
+from src.core.database import check_database_connection
+from src.core.middleware import (
+    LoggingMiddleware,
+    MetricsMiddleware,
+    RateLimitMiddleware,
+)
+from src.services.services import ServiceProxy, ServiceRegistry, create_http_client
 
 # Configure structured logging
 structlog.configure(
@@ -43,40 +49,52 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Prometheus metrics - check if already registered to avoid duplicates
-try:
-    REQUEST_COUNT = Counter(
-        "http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"]
-    )
-except ValueError:
-    # Metric already registered, get it from registry
-    REQUEST_COUNT = REGISTRY._names_to_collectors.get("http_requests_total")  # type: ignore
-
-try:
-    REQUEST_LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency")
-except ValueError:
-    # Metric already registered, get it from registry
-    REQUEST_LATENCY = REGISTRY._names_to_collectors.get("http_request_duration_seconds")  # type: ignore
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Application lifespan manager"""
-    # Startup
+    """Application lifespan manager.
+
+    One HTTP client is created for the whole process and shared by the proxy
+    and the registry health checks, so connection pooling is preserved and no
+    client is leaked per request.
+    """
     logger.info("Starting Bifrost API Gateway")
 
-    # Initialize service registry
-    app.state.service_registry = ServiceRegistry()
-    await app.state.service_registry.initialize()
+    if "*" in settings.ALLOWED_HOSTS:
+        logger.warning(
+            "Host header checking is disabled",
+            allowed_hosts=settings.ALLOWED_HOSTS,
+            environment=settings.ENVIRONMENT,
+            hint="Set ALLOWED_HOSTS to the host names this gateway serves",
+        )
+    if settings.FORWARDED_ALLOW_IPS.strip() == "*":
+        logger.warning(
+            "Forwarded headers are trusted from any address",
+            environment=settings.ENVIRONMENT,
+            hint="Set FORWARDED_ALLOW_IPS to the reverse proxy addresses",
+        )
 
-    logger.info("Bifrost API Gateway started successfully")
+    http_client = create_http_client()
+    app.state.http_client = http_client
+
+    registry = ServiceRegistry(http_client=http_client)
+    app.state.service_registry = registry
+    app.state.service_proxy = ServiceProxy(registry, http_client)
+
+    await registry.initialize()
+
+    logger.info(
+        "Bifrost API Gateway started",
+        registry_ready=registry.ready,
+        service_count=len(registry.services),
+    )
 
     yield
 
-    # Shutdown
     logger.info("Shutting down Bifrost API Gateway")
     if hasattr(app.state, "service_registry"):
         await app.state.service_registry.cleanup()
+    await http_client.aclose()
 
 
 def create_app() -> FastAPI:
@@ -90,35 +108,76 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Add middleware
+    # Middleware. add_middleware puts the newest layer on the outside, so the
+    # calls below run bottom up: CORS, then logging, then metrics, then the
+    # host check, then the rate limiter closest to the routes. Logging and
+    # metrics therefore also observe the responses the rate limiter rejects.
+    app.add_middleware(RateLimitMiddleware)
+
+    if settings.ENVIRONMENT != "test":
+        # ALLOWED_HOSTS is guaranteed non-empty by the settings validator, so
+        # the host check can never be skipped by an omitted value.
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.ALLOWED_HOSTS)
+
+    app.add_middleware(MetricsMiddleware)
+    app.add_middleware(LoggingMiddleware)
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.ALLOWED_ORIGINS,
+        allow_origins=settings.all_cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    app.add_middleware(LoggingMiddleware)
-    app.add_middleware(RateLimitMiddleware)
-
     # Add routes
     app.include_router(api_router, prefix="/api/v1")
     app.include_router(admin_router, prefix="/admin/api")
 
-    # Health check endpoint
     @app.get("/health")
-    async def health_check() -> dict:
+    async def health_check() -> Dict[str, Any]:
+        """Liveness probe. Always succeeds while the process can serve."""
         return {"status": "healthy", "service": "bifrost"}
 
-    # Metrics endpoint
+    @app.get("/ready")
+    async def readiness_check() -> Response:
+        """Readiness probe covering the database and the service registry."""
+        database_ok = True
+        database_error = None
+        try:
+            await run_in_threadpool(check_database_connection)
+        except Exception as exc:  # noqa: BLE001 - reported as not ready
+            database_ok = False
+            database_error = str(exc)
+
+        registry = getattr(app.state, "service_registry", None)
+        registry_ready = bool(getattr(registry, "ready", False))
+        registry_error = getattr(registry, "last_error", None)
+
+        payload: Dict[str, Any] = {
+            "status": "ready" if database_ok and registry_ready else "not_ready",
+            "database": "ok" if database_ok else "error",
+            "registry": "ok" if registry_ready else "degraded",
+            "service_count": len(registry.services) if registry is not None else 0,
+        }
+        if database_error:
+            payload["database_error"] = database_error
+        if registry_error:
+            payload["registry_error"] = registry_error
+
+        status_code = 200 if database_ok and registry_ready else 503
+        return JSONResponse(content=payload, status_code=status_code)
+
     @app.get("/metrics")
     async def metrics() -> Response:
-        return Response(generate_latest(REGISTRY), media_type="text/plain")
+        """Prometheus exposition endpoint."""
+        return Response(
+            generate_latest(REGISTRY),
+            headers={"content-type": CONTENT_TYPE_LATEST},
+        )
 
-    # Root endpoint
     @app.get("/")
-    async def root() -> dict:
+    async def root() -> Dict[str, Any]:
         return {
             "message": "Welcome to Bifrost API Gateway",
             "version": __version__,
@@ -130,11 +189,26 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Console entry point.
+
+    The service registry is an in-process snapshot, so exactly one worker is
+    supported. Run more replicas behind the reverse proxy instead of raising
+    the worker count.
+    """
+    reload = settings.ENVIRONMENT == "development"
     uvicorn.run(
-        "src.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=settings.ENVIRONMENT == "development",
+        "src.main:app" if reload else app,
+        host=settings.HOST,
+        port=settings.PORT,
+        workers=1,
+        reload=reload,
         log_level=settings.LOG_LEVEL.lower(),
+        proxy_headers=True,
+        forwarded_allow_ips=settings.FORWARDED_ALLOW_IPS,
     )
+
+
+if __name__ == "__main__":
+    main()

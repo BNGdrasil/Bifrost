@@ -36,7 +36,7 @@ class TestBasicEndpoints:
         """Test Prometheus metrics endpoint"""
         response = await client.get("/metrics")
         assert response.status_code == 200
-        assert response.headers["content-type"] == "text/plain; charset=utf-8"
+        assert response.headers["content-type"].startswith("text/plain")
 
 
 class TestServiceCRUD:

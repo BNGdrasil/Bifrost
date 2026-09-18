@@ -3,43 +3,65 @@
 #
 # @author bnbong bbbong9@gmail.com
 # --------------------------------------------------------------------------
-import asyncio
-import os
-from typing import AsyncGenerator
-from unittest.mock import AsyncMock, patch
+from typing import AsyncGenerator, Dict, Iterator
+from unittest.mock import patch
 
+import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from httpx import AsyncClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.orm import Session
 
-from src.core.database import get_db
+from src.core.database import Base, SessionLocal, engine, get_db
 from src.main import create_app
+from src.models.service import Service  # noqa: F401 - register table metadata
+from src.schemas.service import ServiceCreate
 
-# Configure test environment
-TEST_DATABASE_URL = os.getenv(
-    "DATABASE_URL", "postgresql://testuser:testpass@localhost:5433/bifrost_test"
+# Baseline services every test suite expects to be present.
+BASELINE_SERVICES = (
+    ("qshing-server", "Qshing Server", "http://qshing-server:8080"),
+    ("hello", "Hello Service", "http://hello:8080"),
+    ("test-service", "Test Service", "http://test-service:8080"),
 )
 
-# Create sync engine and session factory for tests
-test_engine = create_engine(TEST_DATABASE_URL, future=True)
-TestSessionLocal = sessionmaker(bind=test_engine, autocommit=False, autoflush=False)
+
+@pytest.fixture(scope="session", autouse=True)
+def database_schema() -> Iterator[None]:
+    """Create the schema once per session.
+
+    The suite runs against SQLite in memory by default and against a
+    disposable PostgreSQL database in CI. create_all is a no-op when the
+    tables already exist.
+    """
+    Base.metadata.create_all(bind=engine)
+    yield
 
 
-@pytest.fixture(scope="session")
-def event_loop():
-    """Create an instance of the default event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+@pytest.fixture(scope="session", autouse=True)
+def baseline_services(database_schema: None) -> Iterator[None]:
+    """Seed the baseline services used by the read-only assertions."""
+    from src.crud.service import create_service, get_service_by_name
+
+    with SessionLocal() as session:
+        for name, display_name, url in BASELINE_SERVICES:
+            if get_service_by_name(session, name) is None:
+                create_service(
+                    session,
+                    ServiceCreate(
+                        name=name,
+                        display_name=display_name,
+                        url=url,
+                        description=f"{display_name} for testing",
+                    ),
+                )
+    yield
 
 
 @pytest.fixture(scope="function")
-def db_session() -> Session:
-    """Create a new database session for a test with transaction rollback"""
-    session: Session = TestSessionLocal()
+def db_session() -> Iterator[Session]:
+    """Create a new database session for a test"""
+    session: Session = SessionLocal()
     try:
         yield session
         session.rollback()
@@ -48,7 +70,7 @@ def db_session() -> Session:
 
 
 @pytest.fixture
-def test_services(db_session: Session):
+def test_services(db_session: Session) -> Dict[str, object]:
     """Get test services from database"""
     from src.crud.service import get_services
 
@@ -58,39 +80,41 @@ def test_services(db_session: Session):
 
 @pytest_asyncio.fixture
 async def app() -> AsyncGenerator[FastAPI, None]:
-    """Create FastAPI app with overridden dependencies"""
-    from src.services.services import ServiceRegistry
+    """Create FastAPI app with a registry loaded from the test database"""
+    from src.services.services import ServiceProxy, ServiceRegistry, create_http_client
 
-    app = create_app()
+    application = create_app()
 
-    # Initialize service registry with real database data
-    app.state.service_registry = ServiceRegistry()
-    with TestSessionLocal() as session:
-        await app.state.service_registry.initialize(db_session=session)
+    http_client = create_http_client()
+    application.state.http_client = http_client
+    registry = ServiceRegistry(http_client=http_client)
+    application.state.service_registry = registry
+    application.state.service_proxy = ServiceProxy(registry, http_client)
+    await registry.initialize()
 
-    # Override database dependency
-    def override_get_db():
-        with TestSessionLocal() as session:
+    def override_get_db() -> Iterator[Session]:
+        with SessionLocal() as session:
             yield session
 
-    app.dependency_overrides[get_db] = override_get_db
+    application.dependency_overrides[get_db] = override_get_db
 
-    yield app
+    yield application
 
-    # Clean up
-    await app.state.service_registry.cleanup()
-    app.dependency_overrides.clear()
+    await registry.cleanup()
+    await http_client.aclose()
+    application.dependency_overrides.clear()
 
 
 @pytest_asyncio.fixture
 async def client(app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
     """Create test HTTP client"""
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 
 
 @pytest.fixture
-def mock_auth_admin():
+def mock_auth_admin() -> Iterator[object]:
     """Mock auth server to return admin user"""
     with patch("src.core.permissions.verify_role_with_auth_server") as mock:
         mock.return_value = {
@@ -103,7 +127,7 @@ def mock_auth_admin():
 
 
 @pytest.fixture
-def mock_auth_user():
+def mock_auth_user() -> Iterator[object]:
     """Mock auth server to return regular user"""
     with patch("src.core.permissions.verify_role_with_auth_server") as mock:
         mock.return_value = {
@@ -116,7 +140,7 @@ def mock_auth_user():
 
 
 @pytest.fixture
-def mock_auth_super_admin():
+def mock_auth_super_admin() -> Iterator[object]:
     """Mock auth server to return super admin"""
     with patch("src.core.permissions.verify_role_with_auth_server") as mock:
         mock.return_value = {
@@ -129,22 +153,19 @@ def mock_auth_super_admin():
 
 
 @pytest.fixture
-def mock_httpx_get():
-    """Mock httpx.AsyncClient.get for external service calls"""
-    with patch("httpx.AsyncClient.get") as mock:
-        mock_response = AsyncMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"status": "healthy"}
-        mock.return_value = mock_response
+def mock_auth_forbidden() -> Iterator[object]:
+    """Mock auth server rejecting a non privileged user"""
+    from fastapi import HTTPException, status
+
+    with patch("src.core.permissions.verify_role_with_auth_server") as mock:
+        mock.side_effect = HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden - Insufficient permissions",
+        )
         yield mock
 
 
 @pytest.fixture
-def mock_httpx_post():
-    """Mock httpx.AsyncClient.post for external service calls"""
-    with patch("httpx.AsyncClient.post") as mock:
-        mock_response = AsyncMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"success": True}
-        mock.return_value = mock_response
-        yield mock
+def echo_transport() -> httpx.MockTransport:
+    """Placeholder transport hook used by the proxy contract tests."""
+    return httpx.MockTransport(lambda request: httpx.Response(204))

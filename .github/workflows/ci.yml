@@ -6,19 +6,24 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11", "3.12"]
+        python-version: ["3.12", "3.13"]
 
     services:
       postgres:
-        image: postgres:15
+        image: postgres:16
         env:
+          POSTGRES_USER: postgres
           POSTGRES_PASSWORD: password
-          POSTGRES_DB: test_db
+          POSTGRES_DB: bngdrasil_test
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -27,40 +32,46 @@ jobs:
         ports:
           - 5432:5432
 
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
-
     steps:
     - uses: actions/checkout@v5
-
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ matrix.python-version }}
 
     - name: Install uv
       uses: astral-sh/setup-uv@v6
       with:
         version: latest
+        python-version: ${{ matrix.python-version }}
 
     - name: Install dependencies
-      run: uv sync --group dev
+      run: uv sync --locked --group dev
 
-    - name: Run tests
+    - name: Verify interpreter version
+      run: |
+        uv run python -V
+        uv run python -c "import sys; assert '.'.join(map(str, sys.version_info[:2])) == '${{ matrix.python-version }}', sys.version"
+
+    - name: Apply test schema to PostgreSQL
       env:
-        DATABASE_URL: postgresql://postgres:password@localhost:5432/test_db
-        REDIS_URL: redis://localhost:6379/1
-        JWT_SECRET_KEY: test-secret-key
+        PGPASSWORD: password
+      run: |
+        psql -h localhost -U postgres -d bngdrasil_test -v ON_ERROR_STOP=1 \
+          -f tests/fixtures/init_test_db.sql
+
+    - name: Run tests against PostgreSQL
+      env:
+        DATABASE_URL: "postgresql://postgres:password@localhost:5432/bngdrasil_test"
+        SECRET_KEY: ci-only-secret-key-not-for-production-use
         ENVIRONMENT: test
+        DEBUG: "false"
       run: |
         uv run pytest --cov=src --cov-report=xml --cov-report=html
+
+    - name: Run tests against SQLite
+      env:
+        DATABASE_URL: "sqlite:///:memory:"
+        SECRET_KEY: ci-only-secret-key-not-for-production-use
+        ENVIRONMENT: test
+        DEBUG: "false"
+      run: uv run pytest -q
 
     - name: Upload coverage to Codecov
       uses: codecov/codecov-action@v5
@@ -78,28 +89,54 @@ jobs:
           htmlcov/
         retention-days: 30
 
-  security:
+  lint:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v5
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: "3.12"
 
     - name: Install uv
       uses: astral-sh/setup-uv@v6
       with:
         version: latest
+        python-version: "3.12"
 
     - name: Install dependencies
-      run: uv sync --group dev
+      run: uv sync --locked --group dev
 
-    - name: Run security checks
+    - name: Check formatting
       run: |
-        uv run bandit -r src -f json -o bandit-report.json || true
-        uv run safety check --json --output safety-report.json || true
+        uv run black --check .
+        uv run isort --check-only .
+
+    - name: Lint
+      run: uv run flake8 src tests
+
+    - name: Type check
+      run: uv run mypy src
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v6
+      with:
+        version: latest
+        python-version: "3.12"
+
+    - name: Install dependencies
+      run: uv sync --locked --group dev
+
+    # Failures are not ignored. A finding must be fixed or given an explicit,
+    # reviewed suppression in the tool configuration.
+    - name: Static security analysis
+      run: uv run bandit -c pyproject.toml -r src
+
+    - name: Dependency advisory audit
+      run: |
+        uv export --no-hashes --no-dev --no-emit-project -o audit-requirements.txt
+        uv run pip-audit --no-deps -r audit-requirements.txt
 
     - name: Upload security reports
       uses: actions/upload-artifact@v4
@@ -107,6 +144,5 @@ jobs:
       with:
         name: security-reports
         path: |
-          bandit-report.json
-          safety-report.json
+          audit-requirements.txt
         retention-days: 30
