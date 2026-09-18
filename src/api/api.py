@@ -243,12 +243,15 @@ async def proxy_request(
                 detail="Invalid Content-Length header",
             )
 
-    body = await request.body()
-    if len(body) > settings.MAX_REQUEST_BODY_BYTES:
-        raise HTTPException(
-            status_code=HTTP_413_CONTENT_TOO_LARGE,
-            detail="Request body too large",
-        )
+    body_buffer = bytearray()
+    async for chunk in request.stream():
+        if len(body_buffer) + len(chunk) > settings.MAX_REQUEST_BODY_BYTES:
+            raise HTTPException(
+                status_code=HTTP_413_CONTENT_TOO_LARGE,
+                detail="Request body too large",
+            )
+        body_buffer.extend(chunk)
+    body = bytes(body_buffer)
 
     request_id = getattr(request.state, "request_id", None) or uuid.uuid4().hex
     client_host = request.client.host if request.client else ""

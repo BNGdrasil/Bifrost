@@ -108,6 +108,9 @@ class TestSettings:
         """Test that environment variables override default values"""
         env_vars = {
             "ENVIRONMENT": "production",
+            "ALLOWED_HOSTS": "testserver,localhost",
+            "SECRET_KEY": "config-test-signing-key-not-for-production",
+            "DATABASE_URL": "sqlite:///:memory:",
             "DEBUG": "true",
             "LOG_LEVEL": "DEBUG",
             "HOST": "127.0.0.1",
@@ -199,7 +202,12 @@ class TestSettings:
         valid_environments = ["development", "production", "test"]
 
         for env in valid_environments:
-            env_vars = {"ENVIRONMENT": env}
+            env_vars = {
+                "ENVIRONMENT": env,
+                "ALLOWED_HOSTS": "testserver,localhost",
+                "SECRET_KEY": "config-test-signing-key-not-for-production",
+                "DATABASE_URL": "sqlite:///:memory:",
+            }
             with patch.dict(os.environ, env_vars):
                 settings = Settings()
                 assert settings.ENVIRONMENT == env

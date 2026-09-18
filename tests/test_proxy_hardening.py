@@ -330,3 +330,41 @@ class TestNormalisationIsNotTrusted:
             str(proxy.build_target_url(service, b"/a/../b", b""))
             == "http://upstream:8080/base/b"
         )
+
+
+@pytest.mark.asyncio
+async def test_chunked_body_stops_reading_at_limit(monkeypatch):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException, Request
+
+    from src.api.api import proxy_request
+    from src.core.config import settings
+
+    monkeypatch.setattr(settings, "MAX_REQUEST_BODY_BYTES", 4)
+    received = []
+
+    async def receive():
+        received.append(5)
+        return {
+            "type": "http.request",
+            "body": b"x" * 5,
+            "more_body": len(received) < 3,
+        }
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/v1/test/upload",
+            "raw_path": b"/api/v1/test/upload",
+            "query_string": b"",
+            "headers": [],
+        },
+        receive,
+    )
+    proxy = SimpleNamespace(resolve=lambda name: {"name": name})
+    with pytest.raises(HTTPException) as exc:
+        await proxy_request("test", "upload", request, proxy)
+    assert exc.value.status_code == 413
+    assert len(received) == 1
