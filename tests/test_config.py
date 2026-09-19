@@ -491,3 +491,68 @@ class TestListParsing:
     def test_exempt_paths_are_configurable(self):
         settings = Settings(_env_file=None, RATE_LIMIT_EXEMPT_PATHS="/health,/ready")
         assert settings.RATE_LIMIT_EXEMPT_PATHS == ["/health", "/ready"]
+
+
+class TestEmptyEnvironmentValues:
+    """Compose expands an unset variable into an empty string.
+
+    ``env_ignore_empty`` turns that empty string back into "not set" so the
+    declared default applies, instead of failing the type parser at startup.
+    """
+
+    @staticmethod
+    def _build(**env):
+        """Build Settings from an explicit environment, ignoring any .env."""
+        with patch.dict(os.environ, env, clear=True):
+            return Settings(_env_file=None)
+
+    def test_empty_boolean_and_integer_values_use_defaults(self):
+        """The values that broke the production rollout fall back instead"""
+        settings = self._build(
+            ENABLE_METRICS="",
+            MAX_REQUEST_BODY_BYTES="",
+            RATE_LIMIT_PER_MINUTE="",
+            DEBUG="",
+            PORT="",
+        )
+        assert settings.ENABLE_METRICS is True
+        assert settings.MAX_REQUEST_BODY_BYTES == 10 * 1024 * 1024
+        assert settings.RATE_LIMIT_PER_MINUTE == 60
+        assert settings.DEBUG is False
+        assert settings.PORT == 8000
+
+    def test_empty_float_and_string_values_use_defaults(self):
+        """An empty value does not overwrite a float or string default"""
+        settings = self._build(PROXY_TIMEOUT_SECONDS="", LOG_LEVEL="")
+        assert settings.PROXY_TIMEOUT_SECONDS == 30.0
+        assert settings.LOG_LEVEL == "INFO"
+
+    def test_production_still_rejects_empty_allowed_hosts(self):
+        """An empty required list is "not set" and production refuses it"""
+        with pytest.raises(ValueError, match="ALLOWED_HOSTS"):
+            self._build(
+                ENVIRONMENT="production",
+                SECRET_KEY="p" * 40,
+                DATABASE_URL="postgresql://user:pass@db:5432/bifrost",
+                ALLOWED_HOSTS="",
+            )
+
+    def test_production_still_rejects_empty_secret_key(self):
+        """An empty SECRET_KEY keeps failing in production"""
+        with pytest.raises(ValueError, match="SECRET_KEY"):
+            self._build(
+                ENVIRONMENT="production",
+                SECRET_KEY="",
+                DATABASE_URL="postgresql://user:pass@db:5432/bifrost",
+                ALLOWED_HOSTS="api.bnbong.com",
+            )
+
+    def test_production_still_rejects_empty_database_url(self):
+        """An empty DATABASE_URL keeps failing in production"""
+        with pytest.raises(ValueError, match="DATABASE_URL"):
+            self._build(
+                ENVIRONMENT="production",
+                SECRET_KEY="p" * 40,
+                DATABASE_URL="",
+                ALLOWED_HOSTS="api.bnbong.com",
+            )

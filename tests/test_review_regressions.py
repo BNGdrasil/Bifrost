@@ -62,7 +62,6 @@ class TestEnvExampleLoads:
         [
             ("/health,/ready", ["/health", "/ready"]),
             ('["/health", "/ready"]', ["/health", "/ready"]),
-            ("", []),
             ("  ", []),
             ("/health", ["/health"]),
         ],
@@ -73,6 +72,19 @@ class TestEnvExampleLoads:
         loaded = Settings(_env_file=None)
         assert loaded.RATE_LIMIT_EXEMPT_PATHS == expected
         assert loaded.SERVICE_URL_DENIED_HOSTS == expected
+
+    def test_empty_list_value_falls_back_to_the_default(self, monkeypatch):
+        """An empty value means "not set", so the declared default applies.
+
+        This is what env_ignore_empty buys: compose expanding an unset
+        variable no longer turns the exempt path list off by accident. A
+        whitespace-only value is still a real value and yields an empty list.
+        """
+        monkeypatch.setenv("RATE_LIMIT_EXEMPT_PATHS", "")
+        monkeypatch.setenv("SERVICE_URL_DENIED_HOSTS", "")
+        loaded = Settings(_env_file=None)
+        assert loaded.RATE_LIMIT_EXEMPT_PATHS == ["/health", "/ready", "/metrics"]
+        assert loaded.SERVICE_URL_DENIED_HOSTS == []
 
     @pytest.mark.parametrize(
         "raw,expected",
