@@ -186,11 +186,13 @@ release가 다루는 커밋은 언제나 `github.event.workflow_run.head_sha`이
 | --- | --- | --- |
 | `plan` | `ubuntu-latest` | 배포 대상 커밋을 확정하고, 새 이미지를 빌드할지 아니면 이미 올라가 있는 태그를 그대로 배포할지 결정한다. 수동 실행으로 새 코드를 빌드하는 경우에는 같은 커밋의 CI 성공 여부도 이 job에서 확인한다. |
 | `build` | `ubuntu-24.04-arm` | `ghcr.io/bngdrasil/bifrost` 이미지를 `linux/arm64`로 빌드하여 push한다. 태그는 `sha-<짧은 커밋 해시>`와 `main` 두 가지이고, 이후 단계에는 digest로 고정된 참조를 넘긴다. |
-| `deploy` | `ubuntu-latest` | `production` 환경에서 VM2에 SSH로 접속하여 `sudo /opt/bnbong/deploy-image.sh gateway <이미지 참조>`를 실행하고, 그 뒤에 공개 엔드포인트로 smoke 확인을 한 번 수행한다. |
+| `deploy` | `ubuntu-latest` | `production` 환경에서 VM2에 SSH로 접속하여 `sudo /opt/bnbong/deploy-image.sh gateway <이미지 참조>`를 실행하고, 그 뒤에 VM2 안에서 smoke 확인을 수행한다. |
 
 `deploy` job에는 `concurrency: vm2-deploy` 그룹이 걸려 있다. VM2에는 compose 프로젝트가 하나뿐이므로, 두 개의 배포가 동시에 컨테이너를 교체하지 않도록 뒤에 들어온 실행을 취소하지 않고 대기시킨다.
 
-배포 이후의 smoke 확인은 `curl -fsS https://api.bnbong.com/health`를 한 번 호출하는 방식이다. VM1 Nginx의 `api.bnbong.com` 서버 블록에서 `location /`이 gateway upstream으로 향하므로, 이 요청 하나로 Cloudflare와 Nginx, Bifrost까지 이어지는 경로 전체를 확인할 수 있다. 컨테이너 자체의 `/health`와 `/ready` 확인은 그 앞 단계에서 `deploy-image.sh`가 이미 수행한다.
+배포 이후의 smoke 확인은 VM2에 SSH로 접속해서 `curl -fsS http://127.0.0.1:8000/health`와 `curl -fsS http://127.0.0.1:8000/ready`를 실행하는 방식이며, 릴리스의 성패는 이 결과로만 판정한다. Bidar의 release 워크플로도 같은 방식을 쓴다. 컨테이너 자체의 `/health`와 `/ready` 확인은 그 앞 단계에서 `deploy-image.sh`가 이미 수행하므로, 이 단계는 컨테이너 교체가 끝난 뒤의 상태를 한 번 더 확인하는 의미를 가진다.
+
+공개 엔드포인트 `https://api.bnbong.com/health` 확인도 남겨 두었지만, 그 결과는 참고 정보이며 릴리스를 실패시키지 않는다. GitHub 호스티드 러너는 데이터센터 대역의 주소를 쓰기 때문에 Cloudflare가 봇으로 판단해 `HTTP 403`과 `cf-mitigated: challenge` 헤더를 가진 챌린지 페이지를 돌려줄 수 있고, 그 응답은 오리진까지 도달하지 않은 결과이므로 배포 판정의 근거가 되지 못한다. 2026-09-19에 Bantheon의 Nginx 배포 워크플로가 바로 이 챌린지 응답 때문에 헤더 회귀로 오판한 사례가 있어서, 같은 구조를 가진 이 확인도 판정에서 제외했다. 챌린지를 받거나 403이 돌아오면 경고만 남기고 넘어가며, 5xx가 돌아오면 경고와 함께 job summary에도 기록해서 사람이 Cloudflare나 DNS 쪽을 확인하게 한다.
 
 실제 컨테이너 교체는 Baedalus 저장소가 제공하는 `deploy-image.sh`가 담당한다. 이 스크립트는 이미지를 pull하고, 직전 이미지를 `rollback/<컨테이너>:<UTC 시각>`으로 태그해 두고, `/opt/bnbong/.env`의 `GATEWAY_IMAGE` 값을 갱신한 뒤 `docker compose up -d --no-deps gateway`를 실행하며, health 확인에 실패하면 직전 이미지로 스스로 되돌리고 0이 아닌 코드로 종료한다. 워크플로는 이 종료 코드만 신뢰하며, 배포 절차 자체를 다시 구현하지 않는다.
 
