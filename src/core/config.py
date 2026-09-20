@@ -66,7 +66,30 @@ def parse_string_list(v: Any) -> Any:
 # NoDecode stops pydantic-settings from JSON decoding the environment value
 # before validation. Without it a plain comma separated value, or an empty
 # value, makes the process fail to start instead of reaching the parser below.
+DEFAULT_BLOCKED_UPSTREAM_PATHS = ("/metrics",)
+
+
+def parse_blocked_upstream_paths(v: Any) -> Any:
+    """Parse the block list, keeping the default for a blank environment value.
+
+    `env_ignore_empty` already turns an exactly empty value into "not set", but
+    a value made only of whitespace and separators, such as " " or ",", slips
+    past it and parses to an empty list. For an ordinary list that is merely an
+    odd way of writing "nothing"; for this one it silently publishes every
+    upstream operational endpoint. Since the 2026-09-19 incident this project
+    answers a blank environment value with the safe default, so a half written
+    variable keeps the block list, and only an explicit JSON `[]` turns it off.
+    """
+    parsed = parse_string_list(v)
+    if isinstance(v, str) and not v.strip().startswith("[") and parsed == []:
+        return list(DEFAULT_BLOCKED_UPSTREAM_PATHS)
+    return parsed
+
+
 StringList = Annotated[List[str], NoDecode, BeforeValidator(parse_string_list)]
+BlockedPathList = Annotated[
+    List[str], NoDecode, BeforeValidator(parse_blocked_upstream_paths)
+]
 CorsOriginList = Annotated[List[str], NoDecode, BeforeValidator(parse_cors)]
 
 
@@ -139,6 +162,17 @@ class Settings(BaseSettings):
     MAX_REQUEST_BODY_BYTES: int = 10 * 1024 * 1024
     PROXY_TIMEOUT_SECONDS: float = 30.0
     PROXY_MAX_CONNECTIONS: int = 100
+
+    # Upstream paths that must never be reachable through the public gateway.
+    # Upstream services expose their Prometheus endpoint without auth because
+    # only the internal scrape job is supposed to reach it, so proxying it
+    # would publish it. Entries are matched segment by segment against the
+    # decoded upstream path, and an entry blocks that path and everything
+    # below it. An empty or blank environment value means "not set" here as
+    # well, so a compose file that expands an undefined variable falls back to
+    # this default instead of silently turning the block list off. Only an
+    # explicit JSON [] turns the block list off.
+    PROXY_BLOCKED_UPSTREAM_PATHS: BlockedPathList = list(DEFAULT_BLOCKED_UPSTREAM_PATHS)
 
     # Destination policy for registered services.
     # When SERVICE_URL_ALLOWED_HOSTS is non empty only those hosts may be

@@ -13,8 +13,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from src.core.config import settings
 from src.core.metrics import UNKNOWN_SERVICE
+from src.core.pathpolicy import decoding_rounds
 from src.schemas.service import ServicePublic
 from src.services.services import (
+    BlockedUpstreamPathError,
     ServiceNotFoundError,
     ServiceProxy,
     ServiceRegistry,
@@ -31,8 +33,9 @@ PROXY_METHODS = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
 HTTP_413_CONTENT_TOO_LARGE = 413
 
 # Percent encodings that could reintroduce a path separator or a dot segment
-# after the server already decoded the path once.
-FORBIDDEN_PATH_ENCODINGS = (b"%2e", b"%2f", b"%5c")
+# after the server already decoded the path once. They are looked for in every
+# decoding round, so a nested spelling such as %252e is caught as well.
+FORBIDDEN_PATH_ENCODINGS = ("%2e", "%2f", "%5c")
 
 # A backslash is a path separator on some upstream stacks, so it must never
 # reach one, encoded or not.
@@ -95,21 +98,38 @@ def raw_request_suffix(request: Request, decoded_path: str) -> Tuple[bytes, bool
 def reject_unsafe_path(
     raw_suffix: bytes, decoded_path: str, from_fallback: bool = False
 ) -> None:
-    """Refuse dot segments and path separators in a proxied path."""
-    lowered = raw_suffix.lower()
-    for encoding in FORBIDDEN_PATH_ENCODINGS:
-        if encoding in lowered:
-            raise PathExtractionError(
-                "Encoded path separators and dot segments are not accepted"
-            )
-    if b"\\" in raw_suffix:
-        raise PathExtractionError("Backslashes are not accepted in a proxied path")
+    """Refuse dot segments and path separators in a proxied path.
 
-    for segment in decoded_path.split("/"):
-        if segment in (".", ".."):
-            raise PathExtractionError("Relative path segments are not accepted")
-        if BACKSLASH in segment:
+    The path is examined as written and again after every further decoding
+    round, because this gateway is not the last hop. A value such as `%252e`
+    is only the literal text `%2e` to a component that decodes once, but an
+    upstream or an intermediate proxy that decodes the request again turns it
+    back into a dot segment. The price of checking every round is that a path
+    segment meant to carry the literal text `%2e` is refused; a literal
+    percent that does not spell a separator, such as `/files/100%25`, still
+    goes through.
+
+    A `;parameters` suffix does not hide a dot segment either: a servlet style
+    upstream cuts the parameters off the segment before it normalises the
+    path, so `..;` and `..;jsessionid=1` escape the registered base path
+    there.
+    """
+    rounds, settled = decoding_rounds(raw_suffix.decode("latin-1"))
+    if not settled:
+        raise PathExtractionError("Percent encoding in the path is nested too deeply")
+
+    for candidate in (*rounds, decoded_path):
+        lowered = candidate.lower()
+        for encoding in FORBIDDEN_PATH_ENCODINGS:
+            if encoding in lowered:
+                raise PathExtractionError(
+                    "Encoded path separators and dot segments are not accepted"
+                )
+        if BACKSLASH in candidate:
             raise PathExtractionError("Backslashes are not accepted in a proxied path")
+        for segment in candidate.split("/"):
+            if segment.split(";", 1)[0].strip() in (".", ".."):
+                raise PathExtractionError("Relative path segments are not accepted")
 
     if from_fallback:
         # Without raw_path the original encoding is unknown, so anything that
@@ -281,6 +301,19 @@ async def proxy_request(
             headers=headers,
             body=body if body else None,
             raw_query=request.scope.get("query_string", b""),
+        )
+    except BlockedUpstreamPathError:
+        # 404 rather than 403, so the response does not confirm that the
+        # upstream has an endpoint there. No metric label is added: the
+        # request is already counted under the service it targeted.
+        logger.warning(
+            "Blocked upstream operational path",
+            service_name=service_name,
+            path=path,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Not Found",
         )
     except UnsafeProxyPathError as exc:
         logger.warning(

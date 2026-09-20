@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 
 from src.core.config import settings
 from src.core.database import SessionLocal
+from src.core.pathpolicy import has_disguised_dot_segment, path_is_blocked
 from src.crud.service import get_all_active_services, update_service_health
 
 logger = structlog.get_logger()
@@ -99,6 +100,10 @@ class ServiceNotFoundError(LookupError):
 
 class UnsafeProxyPathError(ValueError):
     """Raised when a request path cannot be forwarded safely."""
+
+
+class BlockedUpstreamPathError(ValueError):
+    """Raised when a request targets an operational endpoint of an upstream."""
 
 
 class RegistryLoadError(RuntimeError):
@@ -362,12 +367,29 @@ class ServiceProxy:
         `/base/../x` becomes `/x`. That normalisation is not relied on for
         safety: the check below runs on the resolved path, so a suffix that
         escapes the registered base path is rejected whether httpx collapsed
-        it or left it alone. Encoded dot segments survive normalisation and
-        are refused earlier, by the route handler.
+        it or left it alone. A dot segment that normalisation does not resolve,
+        because it is encoded or carries `;parameters`, is refused here as
+        well as by the route handler.
+
+        Operational endpoints listed in ``PROXY_BLOCKED_UPSTREAM_PATHS`` are
+        refused here rather than in the route handler, because this is the one
+        place every proxied request has to pass through before it reaches an
+        upstream.
         """
         base = httpx.URL(str(service["url"]))
         base_path = base.raw_path.split(b"?", 1)[0].rstrip(b"/")
         suffix = raw_suffix if raw_suffix.startswith(b"/") else b"/" + raw_suffix
+
+        # httpx only collapses a segment that is exactly `.` or `..`, so a
+        # spelling such as `..;` or a doubly encoded `%252e%252e` survives the
+        # containment check below and is only resolved by the upstream. The
+        # route handler refuses those, and so does this, because every proxied
+        # request passes here even when it did not come from that handler.
+        if has_disguised_dot_segment(suffix.decode("latin-1")):
+            raise UnsafeProxyPathError(
+                "Relative path segments are not accepted in a proxied path"
+            )
+
         raw_path = base_path + suffix
         if raw_query:
             raw_path = raw_path + b"?" + raw_query
@@ -382,6 +404,18 @@ class ServiceProxy:
             raise UnsafeProxyPathError(
                 "Resolved upstream path escapes the registered base path"
             )
+
+        # Both the path relative to the registered base path and the absolute
+        # upstream path are checked. The relative one catches a service whose
+        # base path merely shifts its own /metrics to /x/metrics, the absolute
+        # one catches a base path that already ends at a blocked endpoint.
+        blocked_paths = settings.PROXY_BLOCKED_UPSTREAM_PATHS
+        if blocked_paths:
+            for candidate in (suffix, final_path):
+                if path_is_blocked(candidate.decode("latin-1"), blocked_paths):
+                    raise BlockedUpstreamPathError(
+                        "Upstream operational endpoints are not proxied"
+                    )
         return url
 
     async def forward_request(

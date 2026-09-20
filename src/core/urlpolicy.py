@@ -10,6 +10,7 @@ from typing import List, Optional, Union
 from urllib.parse import urlsplit
 
 from src.core.config import settings
+from src.core.pathpolicy import path_is_blocked
 
 IPAddress = Union[ipaddress.IPv4Address, ipaddress.IPv6Address]
 
@@ -176,6 +177,15 @@ def validate_service_url(value: str) -> str:
     allowed = _configured(list(settings.SERVICE_URL_ALLOWED_HOSTS))
     if allowed and host not in allowed:
         raise ServiceUrlPolicyError(f"Host '{hostname}' is not on the allowlist")
+
+    # The proxy compares the request path with PROXY_BLOCKED_UPSTREAM_PATHS,
+    # and a base path that already ends at a blocked endpoint would put the
+    # whole service below it. Refusing such a registration keeps the block
+    # list meaningful without asking the proxy to guess at request time.
+    if path_is_blocked(parts.path, settings.PROXY_BLOCKED_UPSTREAM_PATHS):
+        raise ServiceUrlPolicyError(
+            f"Service URL path '{parts.path}' is on the blocked upstream paths"
+        )
 
     normalised = candidate.rstrip("/")
     return normalised

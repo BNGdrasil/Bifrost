@@ -332,6 +332,157 @@ class TestNormalisationIsNotTrusted:
         )
 
 
+class TestDotSegmentsWithPathParameters:
+    """A `;parameters` suffix must not hide a dot segment from the check.
+
+    Servlet style upstreams strip the path parameters of a segment before they
+    normalise the path, so `..;` and `..;jsessionid=1` are dot segments there.
+    Accepting them would hand such an upstream a way out of the registered base
+    path, and past the blocked upstream path list on the way.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            "x/..;/metrics",
+            "x/..;foo/metrics",
+            "x/.;/y",
+            "..;/admin",
+            "x/..%3b/metrics",
+            "x/..%3B/metrics",
+            "x/.. ;/metrics",
+        ],
+    )
+    async def test_dot_segments_with_parameters_are_rejected(
+        self, upstream: RecordingUpstream, recording_client: AsyncClient, suffix: str
+    ):
+        response = await recording_client.get(f"/api/v1/{ECHO_SERVICE_NAME}/{suffix}")
+        assert response.status_code == 400
+        assert upstream.requests == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("suffix", ["items;v=1", "a/b;charset=utf8/c", "x;"])
+    async def test_ordinary_path_parameters_still_reach_the_upstream(
+        self, upstream: RecordingUpstream, recording_client: AsyncClient, suffix: str
+    ):
+        response = await recording_client.get(f"/api/v1/{ECHO_SERVICE_NAME}/{suffix}")
+        assert response.status_code == 200
+        assert len(upstream.requests) == 1
+
+    @pytest.mark.parametrize("path", ["x/..;/y", "..;jsessionid=1/y", "x/.;/y"])
+    def test_unit_check_rejects_parameterised_dot_segments(self, path: str):
+        from src.api.api import PathExtractionError, reject_unsafe_path
+
+        with pytest.raises(PathExtractionError):
+            reject_unsafe_path(("/" + path).encode(), path)
+
+    def test_build_target_url_refuses_a_parameterised_dot_segment(self):
+        """The proxy must not depend on the route handler alone."""
+        proxy = ServiceProxy.__new__(ServiceProxy)
+        service = {"url": "http://upstream:8080/base"}
+
+        with pytest.raises(UnsafeProxyPathError):
+            proxy.build_target_url(service, b"/..;/..;/admin", b"")
+
+        assert (
+            str(proxy.build_target_url(service, b"/items;v=1", b""))
+            == "http://upstream:8080/base/items;v=1"
+        )
+
+
+class TestMultiplyEncodedPaths:
+    """Every decoding round of a path is checked, not only the first.
+
+    A gateway that decodes once forwards `%252e` as the literal text `%2e`. An
+    upstream or an intermediate proxy that decodes the request a second time
+    turns that back into a dot segment, so the whole family has to be refused
+    here instead of trusting the upstream to stop at one round.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "suffix",
+        [
+            "%252e%252e/admin",
+            "%252E%252E/admin",
+            "a%252fb",
+            "a%255cb",
+            "%25252e%25252e/admin",
+            "a%2525252fb",
+        ],
+    )
+    async def test_multiply_encoded_separators_are_rejected(
+        self, upstream: RecordingUpstream, recording_client: AsyncClient, suffix: str
+    ):
+        response = await recording_client.get(f"/api/v1/{ECHO_SERVICE_NAME}/{suffix}")
+        assert response.status_code == 400
+        assert upstream.requests == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "suffix, expected_path",
+        [
+            ("files/100%25", "/files/100%"),
+            ("files/a%25b", "/files/a%b"),
+            ("files/%25", "/files/%"),
+            ("a%20b/c", "/a b/c"),
+        ],
+    )
+    async def test_a_literal_percent_still_reaches_the_upstream(
+        self,
+        upstream: RecordingUpstream,
+        recording_client: AsyncClient,
+        suffix: str,
+        expected_path: str,
+    ):
+        response = await recording_client.get(f"/api/v1/{ECHO_SERVICE_NAME}/{suffix}")
+        assert response.status_code == 200
+        assert response.json()["path"] == expected_path
+
+    def test_encoding_nested_beyond_the_bound_is_rejected(self):
+        """An unbounded loop is a denial of service, so the bound refuses."""
+        from src.api.api import PathExtractionError, reject_unsafe_path
+        from src.core.pathpolicy import MAX_PATH_DECODING_ROUNDS
+
+        nested = "%25" * (MAX_PATH_DECODING_ROUNDS + 2) + "2e"
+        with pytest.raises(PathExtractionError):
+            reject_unsafe_path(("/" + nested).encode(), nested)
+
+
+class TestUpstreamRedirectsAreNotFollowed:
+    """Following a 3xx would let an upstream reach past the gateway's checks"""
+
+    @pytest.mark.asyncio
+    async def test_the_shared_client_does_not_follow_redirects(self):
+        client = create_http_client()
+        try:
+            assert client.follow_redirects is False
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_to_a_blocked_path_is_handed_to_the_caller(self):
+        """The 302 is returned as is, so the block list is never bypassed."""
+        seen: List[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if request.url.path == "/redirect-me":
+                return httpx.Response(302, headers={"location": "/metrics"})
+            return httpx.Response(200, content=b"secret-metrics")
+
+        async for gateway_client in make_gateway_client(httpx.MockTransport(handler)):
+            response = await gateway_client.get(
+                f"/api/v1/{ECHO_SERVICE_NAME}/redirect-me",
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 302
+        assert response.headers["location"] == "/metrics"
+        assert [request.url.path for request in seen] == ["/redirect-me"]
+
+
 @pytest.mark.asyncio
 async def test_chunked_body_stops_reading_at_limit(monkeypatch):
     from types import SimpleNamespace
