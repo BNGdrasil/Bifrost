@@ -106,7 +106,8 @@ class TestAdminApiUpdatesRegistry:
             f"/admin/api/services/{service_id}",
             headers={"Authorization": "Bearer admin-token"},
         )
-        assert delete.status_code == 204
+        assert delete.status_code == 200
+        assert delete.json()["registry_reloaded"] is True
         assert registry.get_service(name) is None
 
     @pytest.mark.asyncio

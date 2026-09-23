@@ -1,0 +1,88 @@
+{
+    "status": "success",
+    "data": {
+        "alerts": [
+            {
+                "labels": {
+                    "alertname": "TargetDown",
+                    "instance": "gateway:8000",
+                    "job": "msa-gateway",
+                    "severity": "critical"
+                },
+                "annotations": {
+                    "description": "gateway:8000\uc758 msa-gateway scrape\uac00 \uc2e4\ud328\ud558\uace0 \uc788\ub2e4.",
+                    "summary": "msa-gateway target\uc774 5\ubd84 \uc774\uc0c1 \uc751\ub2f5\ud558\uc9c0 \uc54a\ub294\ub2e4"
+                },
+                "state": "firing",
+                "activeAt": "2026-09-22T17:12:46.935164597Z",
+                "value": "0e+00"
+            },
+            {
+                "labels": {
+                    "alertname": "BackupStale",
+                    "component": "postgresql",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node",
+                    "severity": "critical"
+                },
+                "annotations": {
+                    "action": "journalctl -u bngdrasil-backup.service -n 200",
+                    "description": "\ub9c8\uc9c0\ub9c9 \uc131\uacf5 \uc774\ud6c4 364d 13h 15m 9s\uc774 \uc9c0\ub0ac\ub2e4.",
+                    "summary": "vm3-node:9100\uc758 postgresql \ubc31\uc5c5\uc774 8\uc2dc\uac04 \ub118\uac8c \uc131\uacf5\ud558\uc9c0 \uc54a\uc558\ub2e4"
+                },
+                "state": "firing",
+                "activeAt": "2026-09-22T17:12:49.565092635Z",
+                "value": "3.1497309565000057e+07"
+            },
+            {
+                "labels": {
+                    "alertname": "BackupStale",
+                    "component": "redis-vm3",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node",
+                    "severity": "critical"
+                },
+                "annotations": {
+                    "action": "journalctl -u bngdrasil-backup.service -n 200",
+                    "description": "\ub9c8\uc9c0\ub9c9 \uc131\uacf5 \uc774\ud6c4 364d 13h 25m 9s\uc774 \uc9c0\ub0ac\ub2e4.",
+                    "summary": "vm3-node:9100\uc758 redis-vm3 \ubc31\uc5c5\uc774 8\uc2dc\uac04 \ub118\uac8c \uc131\uacf5\ud558\uc9c0 \uc54a\uc558\ub2e4"
+                },
+                "state": "firing",
+                "activeAt": "2026-09-22T17:12:49.565092635Z",
+                "value": "3.1497909565000057e+07"
+            },
+            {
+                "labels": {
+                    "alertname": "BackupStale",
+                    "component": "sqlite-grafana",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node",
+                    "severity": "critical"
+                },
+                "annotations": {
+                    "action": "journalctl -u bngdrasil-backup.service -n 200",
+                    "description": "\ub9c8\uc9c0\ub9c9 \uc131\uacf5 \uc774\ud6c4 364d 13h 35m 9s\uc774 \uc9c0\ub0ac\ub2e4.",
+                    "summary": "vm3-node:9100\uc758 sqlite-grafana \ubc31\uc5c5\uc774 8\uc2dc\uac04 \ub118\uac8c \uc131\uacf5\ud558\uc9c0 \uc54a\uc558\ub2e4"
+                },
+                "state": "firing",
+                "activeAt": "2026-09-22T17:12:49.565092635Z",
+                "value": "3.1498509565000057e+07"
+            },
+            {
+                "labels": {
+                    "alertname": "BackupUnshippedPileup",
+                    "component": "postgresql",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node",
+                    "severity": "warning"
+                },
+                "annotations": {
+                    "summary": "vm3-node:9100\uc758 postgresql \ubbf8\uc804\uc1a1 \ubc31\uc5c5\uc774 6\uac1c \uc313\uc600\ub2e4"
+                },
+                "state": "pending",
+                "activeAt": "2026-09-22T17:12:49.565092635Z",
+                "value": "6e+00"
+            }
+        ]
+    }
+}

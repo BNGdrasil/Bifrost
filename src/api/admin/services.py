@@ -3,10 +3,10 @@
 #
 # @author bnbong bbbong9@gmail.com
 # --------------------------------------------------------------------------
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
@@ -23,10 +23,12 @@ from src.crud.service import (
 from src.crud.service import update_service as crud_update_service
 from src.schemas.service import (
     ServiceCreate,
+    ServiceDeleteResult,
     ServiceHealthStatus,
     ServiceRead,
     ServiceStats,
     ServiceUpdate,
+    ServiceWriteResult,
 )
 from src.services.services import RegistryLoadError, ServiceRegistry
 
@@ -45,15 +47,21 @@ def get_service_registry(request: Request) -> ServiceRegistry:
     return registry  # type: ignore[no-any-return]
 
 
-async def reload_registry(request: Request, db: Session) -> None:
+async def reload_registry(request: Request, db: Session) -> Optional[str]:
     """Reload the registry inline so the caller sees the routing table change.
 
     The request session is returned to the pool first: the reload opens its
     own session, and holding both at once would need two connections per
     admin write.
 
-    A failure is logged and leaves the registry degraded. The database change
-    itself already succeeded, so it is not rolled back here.
+    The database change itself already succeeded and is not rolled back here.
+    Rolling it back would need a second write that can fail for the same
+    reason the reload did, and it would discard a record the operator asked
+    for. The failure is returned instead, and the caller puts it in the
+    response, so "saved but not routed" is stated rather than reported as an
+    unqualified success.
+
+    Returns the failure reason, or None when the reload succeeded.
     """
     registry = get_service_registry(request)
     await run_in_threadpool(db.close)
@@ -61,6 +69,19 @@ async def reload_registry(request: Request, db: Session) -> None:
         await registry.reload()
     except RegistryLoadError as exc:
         logger.error("Service registry reload failed", error=str(exc))
+        return str(exc)
+    return None
+
+
+def apply_reload_outcome(response: Response, registry_error: Optional[str]) -> None:
+    """Mark a write whose registry reload failed with 207 Multi-Status.
+
+    The record was written and the routing table was not, so neither 2xx on
+    its own nor an error status describes the result. 207 says that the parts
+    of this operation ended differently, and the body names which part failed.
+    """
+    if registry_error is not None:
+        response.status_code = status.HTTP_207_MULTI_STATUS
 
 
 @router.get("/services", response_model=List[ServiceRead])
@@ -113,19 +134,24 @@ async def get_service(
 
 
 @router.post(
-    "/services", response_model=ServiceRead, status_code=status.HTTP_201_CREATED
+    "/services",
+    response_model=ServiceWriteResult,
+    status_code=status.HTTP_201_CREATED,
 )
 @require_admin
 async def create_new_service(
     service_data: ServiceCreate,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
-) -> ServiceRead:
+) -> ServiceWriteResult:
     """
     Create a new service (Admin only).
 
     This is the only supported way to change the routing table. The gateway
     registry is reloaded from the database before the response is returned.
+    A reload that fails is reported as 207 with registry_reloaded=false: the
+    record is stored, and the routing table still holds the older snapshot.
     """
     existing_service = await run_in_threadpool(
         get_service_by_name, db, service_data.name
@@ -137,26 +163,38 @@ async def create_new_service(
         )
 
     service = await run_in_threadpool(create_service, db, service_data)
-    result = ServiceRead.model_validate(service)
+    stored = ServiceRead.model_validate(service)
 
-    await reload_registry(request, db)
+    registry_error = await reload_registry(request, db)
+    apply_reload_outcome(response, registry_error)
 
-    logger.info("Service created", service_id=result.id, service_name=result.name)
-    return result
+    logger.info(
+        "Service created",
+        service_id=stored.id,
+        service_name=stored.name,
+        registry_reloaded=registry_error is None,
+    )
+    return ServiceWriteResult(
+        **stored.model_dump(),
+        registry_reloaded=registry_error is None,
+        registry_error=registry_error,
+    )
 
 
-@router.put("/services/{service_id}", response_model=ServiceRead)
+@router.put("/services/{service_id}", response_model=ServiceWriteResult)
 @require_admin
 async def update_existing_service(
     service_id: int,
     service_data: ServiceUpdate,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
-) -> ServiceRead:
+) -> ServiceWriteResult:
     """
     Update a service (Admin only).
 
-    The gateway registry is reloaded before the response is returned.
+    The gateway registry is reloaded before the response is returned, and a
+    reload that fails is reported as 207 with registry_reloaded=false.
     """
     service = await run_in_threadpool(crud_update_service, db, service_id, service_data)
     if not service:
@@ -164,25 +202,44 @@ async def update_existing_service(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Service with ID {service_id} not found",
         )
-    result = ServiceRead.model_validate(service)
+    stored = ServiceRead.model_validate(service)
 
-    await reload_registry(request, db)
+    registry_error = await reload_registry(request, db)
+    apply_reload_outcome(response, registry_error)
 
-    logger.info("Service updated", service_id=result.id, service_name=result.name)
-    return result
+    logger.info(
+        "Service updated",
+        service_id=stored.id,
+        service_name=stored.name,
+        registry_reloaded=registry_error is None,
+    )
+    return ServiceWriteResult(
+        **stored.model_dump(),
+        registry_reloaded=registry_error is None,
+        registry_error=registry_error,
+    )
 
 
-@router.delete("/services/{service_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/services/{service_id}",
+    response_model=ServiceDeleteResult,
+    status_code=status.HTTP_200_OK,
+)
 @require_admin
 async def delete_existing_service(
     service_id: int,
     request: Request,
+    response: Response,
     db: Session = Depends(get_db),
-) -> None:
+) -> ServiceDeleteResult:
     """
     Delete a service (Admin only).
 
     This removes the service from the database and from the gateway registry.
+    The answer carries a body rather than 204, because a reload that fails
+    after the row is gone has to be reported somewhere: that case answers 207
+    with registry_reloaded=false, and the gateway keeps routing to the deleted
+    service until the registry is reloaded again.
     """
     service = await run_in_threadpool(get_service_by_id, db, service_id)
     if not service:
@@ -191,7 +248,7 @@ async def delete_existing_service(
             detail=f"Service with ID {service_id} not found",
         )
 
-    service_name = service.name
+    service_name: str = service.name  # type: ignore[assignment]
 
     success = await run_in_threadpool(delete_service, db, service_id)
     if not success:
@@ -200,10 +257,21 @@ async def delete_existing_service(
             detail=f"Service with ID {service_id} not found",
         )
 
-    await reload_registry(request, db)
+    registry_error = await reload_registry(request, db)
+    apply_reload_outcome(response, registry_error)
 
-    logger.info("Service deleted", service_id=service_id, service_name=service_name)
-    return None
+    logger.info(
+        "Service deleted",
+        service_id=service_id,
+        service_name=service_name,
+        registry_reloaded=registry_error is None,
+    )
+    return ServiceDeleteResult(
+        service_id=service_id,
+        service_name=service_name,
+        registry_reloaded=registry_error is None,
+        registry_error=registry_error,
+    )
 
 
 @router.get("/services/{service_id}/health", response_model=ServiceHealthStatus)

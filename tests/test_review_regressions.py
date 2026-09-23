@@ -56,6 +56,11 @@ class TestEnvExampleLoads:
         ]
         assert loaded.AUTH_SERVER_USERS_PATH == "/users"
         assert loaded.DATABASE_URL.endswith("/bngdrasil")
+        # The shipped file leaves both observability backends unset, so a copy
+        # of it must not half enable the endpoints that read them.
+        assert loaded.PROMETHEUS_URL is None
+        assert loaded.ALERTMANAGER_URL is None
+        assert loaded.OBSERVABILITY_QUERY_TIMEOUT_SECONDS == 2.5
 
     @pytest.mark.parametrize(
         "raw,expected",

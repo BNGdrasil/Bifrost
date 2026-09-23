@@ -6,9 +6,10 @@
 import json
 import secrets
 import warnings
-from typing import Annotated, Any, List, Literal, Union
+from typing import Annotated, Any, Callable, List, Literal, Optional, Sequence, Union
+from urllib.parse import urlsplit
 
-from pydantic import BeforeValidator, computed_field, model_validator
+from pydantic import BeforeValidator, Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from typing_extensions import Self
 
@@ -40,14 +41,21 @@ def _parse_json_list(value: str) -> List[str]:
 
 
 def parse_cors(v: Any) -> List[str]:
-    """Accept both a comma separated string and a JSON list."""
+    """Accept both a comma separated string and a JSON list.
+
+    Blank entries are dropped. Splitting on commas without filtering turned a
+    value such as " " into [""], and a trailing comma into a list with an
+    empty origin at the end. An empty string is not an origin any browser can
+    ever send, so it only made the effective allow list harder to read and
+    put a meaningless entry into the Access-Control-Allow-Origin comparison.
+    """
     if isinstance(v, str):
         stripped = v.strip()
         if stripped.startswith("["):
-            return _parse_json_list(stripped)
-        return [i.strip() for i in v.split(",")]
+            return [item for item in _parse_json_list(stripped) if item.strip()]
+        return [i.strip() for i in v.split(",") if i.strip()]
     elif isinstance(v, list):
-        return [str(item) for item in v]
+        return [str(item) for item in v if str(item).strip()]
     raise ValueError(v)
 
 
@@ -69,28 +77,123 @@ def parse_string_list(v: Any) -> Any:
 DEFAULT_BLOCKED_UPSTREAM_PATHS = ("/metrics",)
 
 
-def parse_blocked_upstream_paths(v: Any) -> Any:
-    """Parse the block list, keeping the default for a blank environment value.
+def blank_value_keeps_default(
+    field_name: str, default: Sequence[str]
+) -> Callable[[Any], Any]:
+    """Build a list parser that answers a blank value with the safe default.
 
-    `env_ignore_empty` already turns an exactly empty value into "not set", but
-    a value made only of whitespace and separators, such as " " or ",", slips
-    past it and parses to an empty list. For an ordinary list that is merely an
-    odd way of writing "nothing"; for this one it silently publishes every
-    upstream operational endpoint. Since the 2026-09-19 incident this project
-    answers a blank environment value with the safe default, so a half written
-    variable keeps the block list, and only an explicit JSON `[]` turns it off.
+    `env_ignore_empty` already turns an exactly empty value into "not set",
+    but a value made only of whitespace and separators, such as " " or ",",
+    slips past it and parses to an empty list. For an ordinary list that is
+    merely an odd way of writing "nothing". For a security policy list it
+    switches the policy off without saying so: the upstream block list stops
+    hiding every operational endpoint, and the destination allowlist stops
+    restricting which hosts may be registered as a service.
+
+    Since the 2026-09-19 incident this project answers a blank value on those
+    fields with the declared default, so a half written variable keeps the
+    policy and only an explicit JSON `[]` turns it off. A warning is emitted
+    as well. When the declared default is itself an empty list the substituted
+    value cannot be told apart from the blank one, so the warning is the only
+    sign the operator gets that the variable never took effect.
     """
-    parsed = parse_string_list(v)
-    if isinstance(v, str) and not v.strip().startswith("[") and parsed == []:
-        return list(DEFAULT_BLOCKED_UPSTREAM_PATHS)
-    return parsed
+    fallback = tuple(default)
+
+    def parser(v: Any) -> Any:
+        parsed = parse_string_list(v)
+        if isinstance(v, str) and not v.strip().startswith("[") and parsed == []:
+            warnings.warn(
+                f"{field_name} was set to a blank value ({v!r}) and has been "
+                f"ignored. The declared default {list(fallback)!r} applies. "
+                "Write an explicit JSON [] to turn this policy off.",
+                stacklevel=1,
+            )
+            return list(fallback)
+        return parsed
+
+    return parser
 
 
 StringList = Annotated[List[str], NoDecode, BeforeValidator(parse_string_list)]
 BlockedPathList = Annotated[
-    List[str], NoDecode, BeforeValidator(parse_blocked_upstream_paths)
+    List[str],
+    NoDecode,
+    BeforeValidator(
+        blank_value_keeps_default(
+            "PROXY_BLOCKED_UPSTREAM_PATHS", DEFAULT_BLOCKED_UPSTREAM_PATHS
+        )
+    ),
+]
+AllowedServiceHostList = Annotated[
+    List[str],
+    NoDecode,
+    BeforeValidator(blank_value_keeps_default("SERVICE_URL_ALLOWED_HOSTS", ())),
+]
+DeniedServiceHostList = Annotated[
+    List[str],
+    NoDecode,
+    BeforeValidator(blank_value_keeps_default("SERVICE_URL_DENIED_HOSTS", ())),
 ]
 CorsOriginList = Annotated[List[str], NoDecode, BeforeValidator(parse_cors)]
+
+# Base URLs of the observability backends the admin API queries. Only http and
+# https are accepted, because the gateway speaks HTTP to them and any other
+# scheme would fail at request time instead of at startup.
+OBSERVABILITY_URL_SCHEMES = ("http", "https")
+
+
+def parse_observability_url(field_name: str) -> Callable[[Any], Any]:
+    """Build a validator for an optional http(s) base URL.
+
+    A value made only of whitespace means "not set", which matches how
+    `env_ignore_empty` treats an exactly empty value and keeps a compose file
+    that expands an undefined variable from enabling a half configured
+    endpoint. Anything else has to be a usable base URL: a malformed value
+    stops the process at startup rather than turning into a 502 the first time
+    an operator opens the dashboard.
+    """
+
+    def parser(v: Any) -> Any:
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise ValueError(f"{field_name} must be a string")
+        candidate = v.strip()
+        if not candidate:
+            return None
+        try:
+            parts = urlsplit(candidate)
+        except ValueError as exc:
+            raise ValueError(f"{field_name} is not parsable: {exc}") from exc
+        if parts.scheme.lower() not in OBSERVABILITY_URL_SCHEMES:
+            raise ValueError(
+                f"{field_name} must use one of the "
+                + ", ".join(OBSERVABILITY_URL_SCHEMES)
+                + " schemes"
+            )
+        try:
+            port = parts.port
+        except ValueError as exc:
+            raise ValueError(f"{field_name} has an invalid port: {exc}") from exc
+        if not parts.hostname:
+            raise ValueError(f"{field_name} must contain a host")
+        if port is not None and not (1 <= port <= 65535):
+            raise ValueError(f"{field_name} port is out of range")
+        if parts.query or parts.fragment:
+            raise ValueError(
+                f"{field_name} must not contain a query string or fragment"
+            )
+        return candidate.rstrip("/")
+
+    return parser
+
+
+PrometheusUrl = Annotated[
+    Optional[str], BeforeValidator(parse_observability_url("PROMETHEUS_URL"))
+]
+AlertmanagerUrl = Annotated[
+    Optional[str], BeforeValidator(parse_observability_url("ALERTMANAGER_URL"))
+]
 
 
 class Settings(BaseSettings):
@@ -176,12 +279,31 @@ class Settings(BaseSettings):
 
     # Destination policy for registered services.
     # When SERVICE_URL_ALLOWED_HOSTS is non empty only those hosts may be
-    # registered. SERVICE_URL_DENIED_HOSTS is always rejected.
-    SERVICE_URL_ALLOWED_HOSTS: StringList = []
-    SERVICE_URL_DENIED_HOSTS: StringList = []
+    # registered. SERVICE_URL_DENIED_HOSTS is always rejected. A blank value
+    # keeps the declared default and warns instead of emptying the list, for
+    # the reason written on blank_value_keeps_default above.
+    SERVICE_URL_ALLOWED_HOSTS: AllowedServiceHostList = []
+    SERVICE_URL_DENIED_HOSTS: DeniedServiceHostList = []
 
     # Monitoring
     ENABLE_METRICS: bool = True
+
+    # Observability backends read by the admin observability endpoints. Both
+    # are optional: when a URL is not set the matching endpoint answers 501
+    # rather than pretending to have data. These are internal addresses on the
+    # monitoring network, never published through the gateway.
+    PROMETHEUS_URL: PrometheusUrl = None
+    ALERTMANAGER_URL: AlertmanagerUrl = None
+
+    # Budget for one observability backend call, applied to the whole call and
+    # not to each transport stage. The admin dashboard polls every 30 seconds,
+    # so a slow backend must fail fast instead of holding a gateway worker.
+    # Zero or a negative value would make every call fail before it starts,
+    # and NaN or inf would remove the budget altogether, so both are refused
+    # at startup rather than at the first request.
+    OBSERVABILITY_QUERY_TIMEOUT_SECONDS: float = Field(
+        default=2.5, gt=0, allow_inf_nan=False
+    )
 
     @computed_field  # type: ignore[prop-decorator]
     @property

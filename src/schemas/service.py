@@ -86,6 +86,39 @@ class ServiceRead(ServiceBase):
     model_config = {"from_attributes": True}
 
 
+class ServiceWriteResult(ServiceRead):
+    """Result of an admin write, including the registry reload outcome.
+
+    The database change is committed before the registry reload runs, and the
+    reload is not rolled back when it fails, because the stored record is
+    correct and re-applying it is the operator's next step. That leaves a
+    state the plain ServiceRead body could not express: the service is saved
+    but the routing table still holds the previous snapshot. These two fields
+    carry that fact, and the handler answers 207 instead of 200 or 201 so a
+    caller that only reads the status code cannot miss it.
+
+    The extra fields are additive, so a client that parses the response as a
+    ServiceRead keeps working.
+    """
+
+    registry_reloaded: bool = True
+    registry_error: Optional[str] = None
+
+
+class ServiceDeleteResult(BaseModel):
+    """Result of a service deletion, including the registry reload outcome.
+
+    Deletion used to answer 204 with no body, which left no place to report a
+    failed reload. It now answers 200 with this body, or 207 when the record
+    was deleted and the routing table still routes to it.
+    """
+
+    service_id: int
+    service_name: str
+    registry_reloaded: bool = True
+    registry_error: Optional[str] = None
+
+
 class ServicePublic(BaseModel):
     """Public view of a registered service.
 

@@ -36,7 +36,10 @@ class TestServiceLifecycle:
             headers={"Authorization": "Bearer admin-token"},
         )
         assert create_response.status_code == 201
-        service_id = create_response.json()["id"]
+        created = create_response.json()
+        service_id = created["id"]
+        assert created["registry_reloaded"] is True
+        assert created["registry_error"] is None
 
         # 2. Read
         get_response = await client.get(
@@ -54,13 +57,21 @@ class TestServiceLifecycle:
         )
         assert update_response.status_code == 200
         assert update_response.json()["display_name"] == "Updated Lifecycle"
+        assert update_response.json()["registry_reloaded"] is True
 
         # 4. Delete
         delete_response = await client.delete(
             f"/admin/api/services/{service_id}",
             headers={"Authorization": "Bearer admin-token"},
         )
-        assert delete_response.status_code == 204
+        # The deletion answers 200 with a body rather than 204, because the
+        # registry reload outcome has to be reported somewhere.
+        assert delete_response.status_code == 200
+        deleted = delete_response.json()
+        assert deleted["service_id"] == service_id
+        assert deleted["service_name"] == unique_name
+        assert deleted["registry_reloaded"] is True
+        assert deleted["registry_error"] is None
 
         # Verify deletion
         deleted_service = get_service_by_name(db_session, unique_name)

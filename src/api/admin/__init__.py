@@ -6,6 +6,7 @@
 from fastapi import APIRouter
 
 from .logs import router as logs_router
+from .observability import router as observability_router
 from .services import router as services_router
 from .settings import router as settings_router
 from .users import router as users_router
@@ -16,6 +17,7 @@ admin_router = APIRouter()
 admin_router.include_router(users_router, prefix="/users", tags=["admin-users"])
 admin_router.include_router(services_router, tags=["admin-services"])
 admin_router.include_router(logs_router, prefix="/logs", tags=["admin-logs"])
+admin_router.include_router(observability_router, tags=["admin-observability"])
 admin_router.include_router(
     settings_router, prefix="/settings", tags=["admin-settings"]
 )
@@ -30,6 +32,7 @@ async def admin_root() -> dict:
             "users": "/admin/api/users",
             "services": "/admin/api/services",
             "logs": "/admin/api/logs",
+            "observability": "/admin/api/observability",
             "settings": "/admin/api/settings",
         },
     }

@@ -1,0 +1,260 @@
+{
+    "status": "success",
+    "data": {
+        "resultType": "vector",
+        "result": [
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_success_timestamp_seconds",
+                    "component": "postgresql",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758600000"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_success_timestamp_seconds",
+                    "component": "redis-vm3",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758599400"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_success_timestamp_seconds",
+                    "component": "sqlite-grafana",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758598800"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_success_timestamp_seconds",
+                    "component": "ship",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758400000"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_status",
+                    "component": "postgresql",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "0"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_status",
+                    "component": "redis-vm3",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "0"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_status",
+                    "component": "sqlite-grafana",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_status",
+                    "component": "ship",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_status",
+                    "component": "all",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_timestamp_seconds",
+                    "component": "postgresql",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758600000"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_timestamp_seconds",
+                    "component": "redis-vm3",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758599400"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_timestamp_seconds",
+                    "component": "sqlite-grafana",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758602000"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_timestamp_seconds",
+                    "component": "ship",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758602100"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_timestamp_seconds",
+                    "component": "all",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758602200"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_unshipped_total",
+                    "component": "postgresql",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "6"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_unshipped_total",
+                    "component": "redis-vm3",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "0"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_unshipped_total",
+                    "component": "sqlite-grafana",
+                    "instance": "vm3-node:9100",
+                    "job": "vm3-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "2"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_success_timestamp_seconds",
+                    "component": "postgresql",
+                    "instance": "vm4-node:9100",
+                    "job": "vm4-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758500000"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_status",
+                    "component": "postgresql",
+                    "instance": "vm4-node:9100",
+                    "job": "vm4-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_last_run_timestamp_seconds",
+                    "component": "postgresql",
+                    "instance": "vm4-node:9100",
+                    "job": "vm4-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "1758500100"
+                ]
+            },
+            {
+                "metric": {
+                    "__name__": "bngdrasil_backup_unshipped_total",
+                    "component": "postgresql",
+                    "instance": "vm4-node:9100",
+                    "job": "vm4-node"
+                },
+                "value": [
+                    1790097311.701,
+                    "9"
+                ]
+            }
+        ]
+    }
+}

@@ -58,9 +58,29 @@ class TestCorsParser:
         assert result == expected
 
     def test_parse_cors_empty_string(self):
-        """Test parsing empty CORS string"""
-        result = parse_cors("")
-        assert result == [""]
+        """A blank value yields no origins rather than one empty origin.
+
+        Splitting on commas without filtering used to turn "" into [""] and
+        " " into [" "], and that empty string travelled into the CORS
+        middleware as if it were an origin a browser could send.
+        """
+        assert parse_cors("") == []
+        assert parse_cors(" ") == []
+        assert parse_cors(",") == []
+        assert parse_cors(" , ") == []
+
+    def test_parse_cors_drops_blank_entries(self):
+        """A trailing or doubled comma must not add an empty origin."""
+        assert parse_cors("http://a.example,,http://b.example ,") == [
+            "http://a.example",
+            "http://b.example",
+        ]
+
+    def test_parse_cors_drops_blank_entries_from_a_json_list(self):
+        assert parse_cors('["http://a.example", "", " "]') == ["http://a.example"]
+
+    def test_parse_cors_drops_blank_entries_from_a_list(self):
+        assert parse_cors(["http://a.example", "", " "]) == ["http://a.example"]
 
     def test_parse_cors_invalid_type(self):
         """Test parsing invalid CORS type raises error"""
@@ -556,3 +576,145 @@ class TestEmptyEnvironmentValues:
                 DATABASE_URL="",
                 ALLOWED_HOSTS="api.bnbong.com",
             )
+
+
+class TestServiceHostPolicyLists:
+    """A blank value must not switch the destination policy off in silence.
+
+    `env_ignore_empty` covers an exactly empty value, but a compose file that
+    writes SERVICE_URL_ALLOWED_HOSTS=${HOSTS} with a half written HOSTS
+    expands to " " or ",". That parsed to an empty list, and an empty
+    allowlist means "every host may be registered". The declared default is
+    itself an empty list here, so the substitution cannot be observed in the
+    value; the warning is what tells the operator the variable never applied.
+    """
+
+    @pytest.mark.parametrize("value", [" ", "   ", ",", ", ,", "\t", " , "])
+    def test_a_blank_allowlist_warns_and_keeps_the_default(self, value: str):
+        with pytest.warns(UserWarning, match="SERVICE_URL_ALLOWED_HOSTS"):
+            settings = Settings(_env_file=None, SERVICE_URL_ALLOWED_HOSTS=value)
+        assert settings.SERVICE_URL_ALLOWED_HOSTS == []
+
+    @pytest.mark.parametrize("value", [" ", ",", " , "])
+    def test_a_blank_denylist_warns_and_keeps_the_default(self, value: str):
+        with pytest.warns(UserWarning, match="SERVICE_URL_DENIED_HOSTS"):
+            settings = Settings(_env_file=None, SERVICE_URL_DENIED_HOSTS=value)
+        assert settings.SERVICE_URL_DENIED_HOSTS == []
+
+    def test_a_real_value_is_parsed_without_a_warning(self):
+        import warnings as warnings_module
+
+        with warnings_module.catch_warnings(record=True) as caught:
+            warnings_module.simplefilter("always")
+            settings = Settings(
+                _env_file=None,
+                ALLOWED_HOSTS="api.bnbong.com",
+                SERVICE_URL_ALLOWED_HOSTS="auth-server, wegis",
+                SERVICE_URL_DENIED_HOSTS='["blocked.example"]',
+            )
+        assert settings.SERVICE_URL_ALLOWED_HOSTS == ["auth-server", "wegis"]
+        assert settings.SERVICE_URL_DENIED_HOSTS == ["blocked.example"]
+        assert not [item for item in caught if "SERVICE_URL_" in str(item.message)]
+
+    def test_an_explicit_json_empty_list_is_accepted_without_a_warning(self):
+        import warnings as warnings_module
+
+        with warnings_module.catch_warnings(record=True) as caught:
+            warnings_module.simplefilter("always")
+            settings = Settings(
+                _env_file=None,
+                ALLOWED_HOSTS="api.bnbong.com",
+                SERVICE_URL_ALLOWED_HOSTS="[]",
+            )
+        assert settings.SERVICE_URL_ALLOWED_HOSTS == []
+        assert not [item for item in caught if "SERVICE_URL_" in str(item.message)]
+
+    def test_the_default_is_not_shared_between_instances(self):
+        first = Settings(_env_file=None, ALLOWED_HOSTS="api.bnbong.com")
+        first.SERVICE_URL_ALLOWED_HOSTS.append("leaked")
+        second = Settings(_env_file=None, ALLOWED_HOSTS="api.bnbong.com")
+        assert second.SERVICE_URL_ALLOWED_HOSTS == []
+
+
+class TestObservabilityBackendSettings:
+    """The observability endpoints refuse to start with an unusable address"""
+
+    @staticmethod
+    def _build(**env):
+        with patch.dict(os.environ, env, clear=True):
+            return Settings(_env_file=None)
+
+    def test_both_urls_default_to_unset(self):
+        settings = self._build()
+        assert settings.PROMETHEUS_URL is None
+        assert settings.ALERTMANAGER_URL is None
+        assert settings.OBSERVABILITY_QUERY_TIMEOUT_SECONDS == 2.5
+
+    def test_an_address_is_accepted_and_normalised(self):
+        settings = self._build(
+            PROMETHEUS_URL="http://prometheus:9090/",
+            ALERTMANAGER_URL="http://alertmanager:9093",
+        )
+        assert settings.PROMETHEUS_URL == "http://prometheus:9090"
+        assert settings.ALERTMANAGER_URL == "http://alertmanager:9093"
+
+    def test_https_is_accepted(self):
+        settings = self._build(PROMETHEUS_URL="https://prometheus.internal")
+        assert settings.PROMETHEUS_URL == "https://prometheus.internal"
+
+    @pytest.mark.parametrize("value", ["", " ", "\t"])
+    def test_a_blank_value_means_not_set(self, value: str):
+        """A compose file expanding an undefined variable must not half enable
+        the endpoint."""
+        settings = self._build(PROMETHEUS_URL=value, ALERTMANAGER_URL=value)
+        assert settings.PROMETHEUS_URL is None
+        assert settings.ALERTMANAGER_URL is None
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "prometheus:9090",
+            "ftp://prometheus:9090",
+            "file:///etc/passwd",
+            "http://",
+            "http://prometheus:9090?x=1",
+            "http://prometheus:9090#frag",
+            "http://prometheus:99999",
+        ],
+    )
+    def test_an_unusable_address_fails_at_startup(self, value: str):
+        with pytest.raises(ValidationError):
+            self._build(PROMETHEUS_URL=value)
+
+    def test_the_timeout_is_configurable(self):
+        assert (
+            self._build(
+                OBSERVABILITY_QUERY_TIMEOUT_SECONDS="0.5"
+            ).OBSERVABILITY_QUERY_TIMEOUT_SECONDS
+            == 0.5
+        )
+
+    def test_an_empty_timeout_falls_back_to_the_default(self):
+        assert (
+            self._build(
+                OBSERVABILITY_QUERY_TIMEOUT_SECONDS=""
+            ).OBSERVABILITY_QUERY_TIMEOUT_SECONDS
+            == 2.5
+        )
+
+    @pytest.mark.parametrize("value", ["0", "-1", "-0.5"])
+    def test_a_non_positive_timeout_is_refused(self, value: str):
+        """Zero or less would make every observability call fail at once."""
+        with pytest.raises(ValidationError):
+            self._build(OBSERVABILITY_QUERY_TIMEOUT_SECONDS=value)
+
+    @pytest.mark.parametrize("value", ["nan", "NaN", "inf", "Infinity", "-inf"])
+    def test_a_non_finite_timeout_is_refused(self, value: str):
+        """inf removes the budget and NaN compares false against every bound.
+
+        Python's float() accepts both spellings, so without this rule the
+        value reached asyncio.wait_for and the call that was meant to fail
+        fast could wait forever.
+        """
+        with pytest.raises(ValidationError):
+            self._build(OBSERVABILITY_QUERY_TIMEOUT_SECONDS=value)
